@@ -1,0 +1,28 @@
+name: Build Windows app
+on:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test extension
+        run: node tests/extension.test.js
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Publish self-contained application
+        run: dotnet publish PinterestDownload.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o dist/app
+      - name: Package application and extension
+        shell: pwsh
+        run: |
+          Copy-Item -Recurse extension dist/extension
+          Copy-Item README.md dist/README.md
+          Compress-Archive -Path dist/app,dist/extension,dist/README.md -DestinationPath PinterestDownload-Windows.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PinterestDownload-Windows
+          path: PinterestDownload-Windows.zip

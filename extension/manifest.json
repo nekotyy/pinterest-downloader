@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Pinterest Download — вкладки",
+  "version": "1.0.0",
+  "description": "Передаёт открытые пины в локальное приложение Pinterest Download.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvViTXPeONLYmXRFIqkWb7EXp0JNLlv5cTlyeznVJjasoHshwsJZJ0NAesLF/3GzaQ7pybB3NvtQBMwQr4yg4L9kfuUXZSuvDXFVM/l0Hd/sA35TNwTKxxYhePo7dP3ZYqIoXmJNagFFpJiEKuVRvBd6k4azK/xHH9T3nqFHynHbYEcY6XSBX1HNSH8Pv/3mwMRpJ9jhKu2/3m37PxVqw4p3ytW/tEsTrsj80mRd/psyB/z0ofNM6feTEyodGE21HddWThJ/B9nnqI70q7JHw0mCsh7EA7SMtgalFi+KryyRetEPE7BgbCuDV1JeG3fYnTg0mBQsEnhGJSBSXx2ZfZwIDAQAB",
+  "permissions": [
+    "tabs",
+    "scripting",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://*.pinterest.com/*",
+    "http://127.0.0.1:17849/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Обновить пины в Pinterest Download"
+  }
+}

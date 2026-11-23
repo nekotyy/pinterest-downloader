@@ -1,0 +1,35 @@
+const endpoint = 'http://127.0.0.1:17849/pins';
+let sending = false;
+async function sync() {
+  if (sending) return;
+  sending = true;
+  try {
+    const tabs = await chrome.tabs.query({ url: 'https://*.pinterest.com/pin/*' });
+    const seen = new Set(), pins = [];
+    for (const tab of tabs) {
+      const match = tab.url?.match(/^https:\/\/(?:[a-z0-9-]+\.)*pinterest\.com\/pin\/(\d+)/i);
+      if (!match || seen.has(match[1])) continue;
+      seen.add(match[1]);
+      let image = '';
+      try {
+        const result = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => {
+          const meta = document.querySelector('meta[property="og:image"]')?.content;
+          if (meta) return meta;
+          return [...document.images].filter(i => i.currentSrc && i.naturalWidth >= 200 && i.naturalHeight >= 200)
+            .sort ( (a,b) => b.naturalWidth*b.naturalHeight-a.naturalWidth*a.naturalHeight )[0]?.currentSrc || '';
+        }});
+        image = result[0]?.result || '';
+      } catch (_) {}
+      pins.push({ id: match[1], url: tab.url, title: tab.title || `Пин ${match[1]}`, image });
+    }
+    await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(pins) });
+    await chrome.action.setBadgeText({text: ''});
+  } catch (_) { await chrome.action.setBadgeText({text: '!'}); }
+  finally { sending = false; }
+}
+chrome.action.onClicked.addListener(sync);
+chrome.tabs.onUpdated.addListener((id, change) => { if (change.status === 'complete') sync(); });
+chrome.tabs.onRemoved.addListener(sync);
+chrome.runtime.onStartup.addListener(sync);
+chrome.runtime.onInstalled.addListener(() => { chrome.alarms.create('sync', { periodInMinutes: 0.5 }); sync(); });
+chrome.alarms.onAlarm.addListener(sync);
