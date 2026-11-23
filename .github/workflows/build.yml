@@ -29,6 +29,9 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: bash tests/smoke-linux.sh
+      - name: Check Windows startup and browser connection
+        if: runner.os == 'Windows'
+        run: python tests/smoke-windows.py
       - name: Package Windows
         if: runner.os == 'Windows'
         shell: pwsh
