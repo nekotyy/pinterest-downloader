@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Pinterest Download — вкладки",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Передаёт открытые пины в локальное приложение Pinterest Download.",
   "permissions": [
     "tabs",
     "scripting",
-    "alarms"
+    "alarms",
+    "storage"
   ],
   "host_permissions": [
     "https://*.pinterest.com/*",
@@ -18,7 +19,11 @@
     ]
   },
   "action": {
-    "default_title": "Обновить пины в Pinterest Download"
+    "default_title": "Pinterest Download",
+    "default_icon": {
+      "128": "icon128.png"
+    },
+    "default_popup": "popup.html"
   },
   "browser_specific_settings": {
     "gecko": {
@@ -30,5 +35,9 @@
         ]
       }
     }
+  },
+  "author": "nekoty developer",
+  "icons": {
+    "128": "icon128.png"
   }
 }

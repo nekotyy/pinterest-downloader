@@ -1,34 +1,47 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
-assert.equal(fs.readFileSync('extension/background.js', 'utf8'), fs.readFileSync('extension-firefox/background.js', 'utf8'), 'Browser implementations must match');
+const crypto = require('node:crypto');
+const source = fs.readFileSync('extension/background.js', 'utf8');
+assert.equal(source, fs.readFileSync('extension-firefox/background.js', 'utf8'));
 
-let clicked, sent;
-const event = { addListener() {} };
-const chrome = {
-  tabs: { query: async () => [
-    { id: 1, url: 'https://ru.pinterest.com/pin/123/', title: 'Один' },
-    { id: 2, url: 'https://www.pinterest.com/pin/123/', title: 'Дубликат' },
-    { id: 3, url: 'https://www.pinterest.com/pin/456/', title: 'Два' },
-    { id: 4, url: 'https://evil.example/pin/789/' }
-  ], onUpdated: event, onRemoved: event },
-  scripting: { executeScript: async ({ target }) => target.tabId === 3 ? Promise.reject(new Error('unavailable')) : [{ result: 'https://i.pinimg.com/one.jpg' }] },
-  action: { onClicked: { addListener(fn) { clicked = fn; } }, setBadgeText: async () => {} },
-  runtime: { onStartup: event, onInstalled: event }, alarms: { onAlarm: event, create() {} }
-};
-const context = { chrome, fetch: async (url, options) => { sent = JSON.parse(options.body); } };
-vm.runInNewContext(fs.readFileSync('extension/background.js', 'utf8'), context);
-(async () => {
-  await clicked();
-  assert.equal(sent.length, 2);
-  assert.equal(sent[0].id, '123');
-  assert.equal(sent[0].image, 'https://i.pinimg.com/one.jpg');
-  assert.equal(sent[1].id, '456');
-  assert.equal(sent[1].image, '');
-  sent = undefined;
-  vm.runInNewContext(fs.readFileSync('extension-firefox/background.js', 'utf8'), { browser: chrome, fetch: context.fetch });
-  await clicked();
-  assert.equal(sent.length, 2);
-  assert.equal(sent[0].id, '123');
-  console.log('Extension sync: OK');
-})().catch(error => { console.error(error); process.exitCode = 1; });
+async function check(browserMode) {
+  let messageListener, sent = [], active = 0, maxActive = 0, calls = 0;
+  const events = { addListener() {} };
+  const tabs = Array.from({ length: 1000 }, (_, i) => ({ id: i + 1, url: `https://ru.pinterest.com/pin/${i + 1}/`, title: `Пин ${i + 1}`, discarded: i === 9 }));
+  tabs.push({ id: 1001, url: tabs[0].url, title: 'Дубликат' }, { id: 1002, url: 'https://evil.example/pin/55/' });
+  const storage = {};
+  const api = {
+    tabs: { query: async () => tabs, onUpdated: events, onRemoved: events },
+    scripting: { executeScript: async ({ target }) => { active++; calls++; maxActive = Math.max(active, maxActive); await Promise.resolve(); active--; if (target.tabId === 4) throw Error('unavailable'); return [{ result: `https://i.pinimg.com/${target.tabId}.jpg` }]; } },
+    action: { setBadgeText: async () => {} },
+    runtime: { onStartup: events, onInstalled: events, onMessage: { addListener(fn) { messageListener = fn; } } },
+    alarms: { onAlarm: events, create() {} },
+    storage: { local: { get: async () => ({ ...storage }), set: async data => Object.assign(storage, data) } }
+  };
+  const context = { [browserMode]: api, navigator: { userAgent: browserMode === 'browser' ? 'Firefox/120' : 'Chrome/120' }, crypto,
+    setTimeout: (fn, ms) => { const timer = setTimeout(fn, ms); timer.unref(); return timer; }, clearTimeout,
+    fetch: async (url, options) => { sent.push(JSON.parse(options.body)); return { ok: true }; } };
+  vm.createContext(context);
+  vm.runInContext(source, context);
+  await vm.runInContext('sync()', context);
+  const result = sent.at(-1);
+  assert.equal(result.pins.length, 1000);
+  assert.equal(result.done, 1000);
+  assert.equal(result.pins[0].image, 'https://i.pinimg.com/1.jpg');
+  assert.equal(result.pins[3].image, '');
+  assert.equal(result.pins[9].image, '');
+  assert.ok(maxActive <= 6);
+  assert.equal(calls, 999);
+  let status;
+  messageListener({ type: 'status' }, {}, value => { status = value; });
+  assert.equal(status.connected, true);
+  assert.equal(status.total, 1000);
+  assert.equal(status.phase, 'Готово');
+  const id = result.source;
+  sent = []; await vm.runInContext('sync()', context);
+  assert.equal(sent.at(-1).source, id);
+  assert.equal(calls, 1000, 'only unavailable loaded tab is retried');
+}
+(async () => { await check('chrome'); await check('browser'); console.log('Chrome and Firefox sync, 1000 tabs and unloaded tabs: OK'); })()
+  .catch(error => { console.error(error); process.exitCode = 1; });

@@ -37,14 +37,16 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item -Recurse extension,extension-firefox,docs dist/
-          Copy-Item README.md,ИНСТРУКЦИЯ.txt dist/
+          Copy-Item README.md dist/
+          Copy-Item docs/quickstart.md dist/ИНСТРУКЦИЯ.txt
           Compress-Archive -Path dist/* -DestinationPath PinterestDownload-Windows.zip
       - name: Package Linux
         if: runner.os == 'Linux'
         shell: bash
         run: |
           cp -r extension extension-firefox docs dist/
-          cp README.md ИНСТРУКЦИЯ.txt dist/
+          cp README.md dist/
+          cp docs/quickstart.md dist/ИНСТРУКЦИЯ.txt
           chmod +x dist/app/PinterestDownload
           tar -C dist -czf PinterestDownload-Linux.tar.gz .
       - uses: actions/upload-artifact@v4

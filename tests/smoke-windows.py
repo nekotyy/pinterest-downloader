@@ -2,11 +2,12 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
+import json
 
 
-def request(origin):
+def request(origin, body=b"[]"):
     data = urllib.request.Request(
-        "http://127.0.0.1:17849/pins", data=b"[]", method="POST",
+        "http://127.0.0.1:17849/pins", data=body, method="POST",
         headers={"Origin": origin, "Content-Type": "application/json"},
     )
     try:
@@ -31,6 +32,9 @@ try:
         raise RuntimeError("Application did not accept the browser connection")
     assert request("https://example.com") == 403
     assert request("moz-extension://12345678-1234-1234-1234-123456789abc") == 204
+    pins = [{"id": str(i), "url": f"https://www.pinterest.com/pin/{i}/", "title": "Пин", "image": ""} for i in range(1, 1001)]
+    body = json.dumps({"source": "12345678-1234-1234-1234-123456789abc", "browser": "Chrome", "generation": 1, "done": 1000, "total": 1000, "pins": pins}).encode()
+    assert request("chrome-extension://alenpleailakepgbibnkkmhcmkoijmch", body) == 204
     print("Windows startup and browser connections: OK")
 finally:
     app.terminate()
