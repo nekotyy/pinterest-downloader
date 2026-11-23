@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">Pinterest Download</title>
+  <rect x="8" y="8" width="112" height="112" rx="34" fill="#9f2334"/>
+  <path d="M39 37h50a7 7 0 0 1 7 7v38a7 7 0 0 1-7 7H39a7 7 0 0 1-7-7V44a7 7 0 0 1 7-7Z" fill="none" stroke="#fff8f3" stroke-width="6"/>
+  <path d="M64 45v25m-10-9 10 10 10-10M48 80h32" fill="none" stroke="#fff8f3" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

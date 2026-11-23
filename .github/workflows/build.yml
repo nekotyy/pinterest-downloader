@@ -20,8 +20,9 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item -Recurse extension dist/extension
+          Copy-Item -Recurse docs dist/docs
           Copy-Item README.md dist/README.md
-          Compress-Archive -Path dist/app,dist/extension,dist/README.md -DestinationPath PinterestDownload-Windows.zip
+          Compress-Archive -Path dist/app,dist/extension,dist/docs,dist/README.md -DestinationPath PinterestDownload-Windows.zip
       - uses: actions/upload-artifact@v4
         with:
           name: PinterestDownload-Windows
