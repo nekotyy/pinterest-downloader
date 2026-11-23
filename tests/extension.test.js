@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
+assert.equal(fs.readFileSync('extension/background.js', 'utf8'), fs.readFileSync('extension-firefox/background.js', 'utf8'), 'Browser implementations must match');
 
 let clicked, sent;
 const event = { addListener() {} };

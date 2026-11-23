@@ -1,0 +1,30 @@
+name: Сообщить об ошибке
+description: Расскажите, что не работает, чтобы мы могли воспроизвести проблему.
+title: "[Ошибка]: "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Что произошло?
+      description: Опишите проблему и ожидаемое поведение.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Как повторить?
+      placeholder: "1. Открыл приложение\n2. ..."
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Система, браузер и версия приложения
+      placeholder: Windows 11, Chrome, v0.2.0
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Дополнительные сведения
+      description: Текст ошибки или скриншот без личных данных.

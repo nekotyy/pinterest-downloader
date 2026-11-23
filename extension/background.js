@@ -1,10 +1,11 @@
+const api = globalThis.browser || chrome;
 const endpoint = 'http://127.0.0.1:17849/pins';
 let sending = false;
 async function sync() {
   if (sending) return;
   sending = true;
   try {
-    const tabs = await chrome.tabs.query({ url: 'https://*.pinterest.com/pin/*' });
+    const tabs = await api.tabs.query({ url: 'https://*.pinterest.com/pin/*' });
     const seen = new Set(), pins = [];
     for (const tab of tabs) {
       const match = tab.url?.match(/^https:\/\/(?:[a-z0-9-]+\.)*pinterest\.com\/pin\/(\d+)/i);
@@ -12,7 +13,7 @@ async function sync() {
       seen.add(match[1]);
       let image = '';
       try {
-        const result = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => {
+        const result = await api.scripting.executeScript({ target: { tabId: tab.id }, func: () => {
           const meta = document.querySelector('meta[property="og:image"]')?.content;
           if (meta) return meta;
           return [...document.images].filter(i => i.currentSrc && i.naturalWidth >= 200 && i.naturalHeight >= 200)
@@ -23,13 +24,13 @@ async function sync() {
       pins.push({ id: match[1], url: tab.url, title: tab.title || `Пин ${match[1]}`, image });
     }
     await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(pins) });
-    await chrome.action.setBadgeText({text: ''});
-  } catch (_) { await chrome.action.setBadgeText({text: '!'}); }
+    await api.action.setBadgeText({text: ''});
+  } catch (_) { await api.action.setBadgeText({text: '!'}); }
   finally { sending = false; }
 }
-chrome.action.onClicked.addListener(sync);
-chrome.tabs.onUpdated.addListener((id, change) => { if (change.status === 'complete') sync(); });
-chrome.tabs.onRemoved.addListener(sync);
-chrome.runtime.onStartup.addListener(sync);
-chrome.runtime.onInstalled.addListener(() => { chrome.alarms.create('sync', { periodInMinutes: 0.5 }); sync(); });
-chrome.alarms.onAlarm.addListener(sync);
+api.action.onClicked.addListener(sync);
+api.tabs.onUpdated.addListener((id, change) => { if (change.status === 'complete') sync(); });
+api.tabs.onRemoved.addListener(sync);
+api.runtime.onStartup.addListener(sync);
+api.runtime.onInstalled.addListener(() => { api.alarms.create('sync', { periodInMinutes: 0.5 }); sync(); });
+api.alarms.onAlarm.addListener(sync);
