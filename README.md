@@ -78,3 +78,7 @@ dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=
 ```
 
 Для Linux используй `linux-x64`. GitHub Actions проверяет запуск и собирает архивы для обеих систем.
+
+## Лицензия
+
+[MIT](LICENSE).
