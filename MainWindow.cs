@@ -65,7 +65,7 @@ sealed class MainWindow : Window
         history = new DownloadHistory(historyFile);
         downloader = new ImageDownloader(client, history);
         if (history.LoadError != null) notice.Text = "Не удалось прочитать историю загрузок: " + history.LoadError;
-        Title = "Pinterest Download"; Width = 1200; Height = 800; MinWidth = 700; MinHeight = 500;
+        Title = "Pinterest Downloader"; Width = 1200; Height = 800; MinWidth = 700; MinHeight = 500;
         try { Icon = new WindowIcon(AssetLoader.Open(new Uri("avares://PinterestDownload/docs/icon.png"))); } catch { }
         var choose = new Button { Content = "Изменить папку" };
         AutomationProperties.SetName(browserFilter, "Выбор браузера");
@@ -86,7 +86,7 @@ sealed class MainWindow : Window
         DockPanel.SetDock(buttons, Dock.Right); top.Children.Add(buttons); top.Children.Add(folderLabel);
         var toolbar = new WrapPanel { Orientation = Orientation.Horizontal, Children = { countLabel, select, repeat, closeTabs } };
         foreach (Control control in toolbar.Children) control.Margin = new Thickness(0, 0, 14, 4);
-        var headerText = new StackPanel { Spacing = 4, Children = { new TextBlock { Text = "Pinterest Download", FontSize = 27, FontWeight = FontWeight.Bold }, new TextBlock { Text = "Ваши пины в одном месте", Opacity = .7 } } };
+        var headerText = new StackPanel { Spacing = 4, Children = { new TextBlock { Text = "Pinterest Downloader", FontSize = 27, FontWeight = FontWeight.Bold }, new TextBlock { Text = "Ваши пины в одном месте", Opacity = .7 } } };
         var header = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 14, Children = { headerText } };
         try { header.Children.Insert(0, new Image { Source = new Bitmap(AssetLoader.Open(new Uri("avares://PinterestDownload/docs/icon.png"))), Width = 48, Height = 48 }); } catch { }
         var layout = new Grid { RowDefinitions = new RowDefinitions("Auto,Auto,Auto,Auto,Auto,Auto,Auto,*,Auto"), Margin = new Thickness(28), RowSpacing = 12 };
