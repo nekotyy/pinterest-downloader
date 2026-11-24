@@ -32,6 +32,7 @@ dotnet run --project tests/HistoryChecks/HistoryChecks.csproj
 - `MainWindow.cs`: интерфейс и локальный HTTP-обмен с расширением.
 - `BrowserRegistry.cs`, `CloseCommands.cs`: состояние браузеров и очередь закрытия вкладок.
 - `DownloadHistory.cs`, `ImageDownloader.cs`, `PinFilter.cs`: история, загрузка и фильтрация.
+- `AppPreferences.cs`, `SettingsDialog.cs`: настройки и их окно.
 - `extension`, `extension-firefox`: версии расширения для Chromium и Firefox.
 - `tests`: проверки расширения, логики приложения и запуска сборок.
 
