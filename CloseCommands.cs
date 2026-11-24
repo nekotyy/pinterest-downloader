@@ -20,6 +20,9 @@ sealed class CloseCommands
         return result;
     }
 
+    public static Dictionary<string, string[]> AutomaticTargets(BrowserRegistry browsers, string? source, DateTime now, IReadOnlySet<string> saved, bool cancelled, Func<string, bool> isSaved)
+        => cancelled ? new() : Targets(browsers, source, now, id => saved.Contains(id) && isSaved(id));
+
     public bool Queue(string source, IEnumerable<string> ids, DateTimeOffset now)
     {
         var pins = ids.Where(id => id.Length is > 0 and <= 30 && id.All(char.IsAsciiDigit)).Distinct().ToArray();

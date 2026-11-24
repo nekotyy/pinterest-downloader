@@ -85,11 +85,21 @@ try {
     Assert(targets.Count == 2 && targets[source1].SequenceEqual(new[] { "123" }) && targets[source2].SequenceEqual(new[] { "123" }), "only downloaded pins are targeted in each connected browser");
     targets = CloseCommands.Targets(closeRegistry, source1, now, id => id == "123");
     Assert(targets.Count == 1 && targets.ContainsKey(source1), "the browser filter limits tab closing");
+    var savedInBatch = new HashSet<string> { "456" };
+    targets = CloseCommands.Targets(closeRegistry, null, now, savedInBatch.Contains);
+    Assert(targets.Count == 1 && targets[source1].SequenceEqual(new[] { "456" }), "automatic closing targets only pins saved in the current batch");
+    Assert(CloseCommands.Targets(closeRegistry, null, now, _ => false).Count == 0, "an empty successful batch does not close tabs");
+    Assert(CloseCommands.AutomaticTargets(closeRegistry, null, now, savedInBatch, true, _ => true).Count == 0, "cancelling a batch never closes tabs automatically");
+    targets = CloseCommands.AutomaticTargets(closeRegistry, source1, now, savedInBatch, false, _ => true);
+    Assert(targets.Count == 1 && targets[source1].SequenceEqual(new[] { "456" }), "automatic closing is limited to successful files and the selected browser");
     Assert(CloseCommands.Targets(closeRegistry, null, now.AddMinutes(3), _ => true).Count == 0, "offline browsers do not receive close requests");
     var searchable = new[] { withImage with { Title = "Mountain" }, other with { Title = "Coast" } };
     Assert(PinFilter.Apply(searchable, "mount", false, _ => false).Single().Id == "123", "search is case-insensitive");
     Assert(PinFilter.Apply(searchable, "456", false, _ => false).Single().Id == "456", "search matches pin IDs");
     Assert(PinFilter.Apply(searchable, "", true, id => id == "123").Single().Id == "456", "downloaded pins can be hidden");
+    var many = Enumerable.Range(1, 101).Select(i => new Pin(i.ToString(), "", "", "")).ToArray();
+    Assert(PinFilter.Page(many, 0, 50).Length == 50, "the selected page size is respected");
+    Assert(PinFilter.Page(many, 2, 50).Single().Id == "101", "the last page contains the remaining pin");
 
     var downloadFolder = Path.Combine(root, "downloads");
     var downloadHistory = new DownloadHistory(Path.Combine(root, "downloads-history.json"));
