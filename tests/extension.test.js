@@ -13,7 +13,8 @@ for (const folder of ['extension', 'extension-firefox']) {
 }
 
 async function check(browserMode) {
-  let messageListener, tabUpdated, sent = [], active = 0, maxActive = 0, calls = 0, reloads = 0, alarm = null;
+  let messageListener, tabUpdated, sent = [], active = 0, maxActive = 0, calls = 0, reloads = 0;
+  const alarms = new Map();
   const events = { addListener() {} };
   const tabs = Array.from({ length: 1000 }, (_, i) => ({ id: i + 1, url: `https://ru.pinterest.com/pin/${i + 1}/`, title: `Пин ${i + 1}`, discarded: i === 9 }));
   tabs.push({ id: 1001, url: tabs[0].url, title: 'Дубликат' }, { id: 1002, url: 'https://evil.example/pin/55/' });
@@ -23,7 +24,7 @@ async function check(browserMode) {
     scripting: { executeScript: async ({ target }) => { active++; calls++; maxActive = Math.max(active, maxActive); await Promise.resolve(); active--; if (target.tabId === 4) throw Error('unavailable'); return [{ result: `https://i.pinimg.com/${target.tabId}.jpg` }]; } },
     action: { setBadgeText: async () => {} },
     runtime: { onStartup: events, onInstalled: events, onMessage: { addListener(fn) { messageListener = fn; } } },
-    alarms: { onAlarm: events, create: (name, value) => { alarm = value.periodInMinutes; }, clear: async () => { alarm = null; } },
+    alarms: { onAlarm: events, create: (name, value) => { alarms.set(name, value.periodInMinutes); }, clear: async name => { alarms.delete(name); } },
     storage: { local: { get: async () => ({ ...storage }), set: async data => Object.assign(storage, data) } }
   };
   const context = { [browserMode]: api, navigator: { userAgent: browserMode === 'browser' ? 'Firefox/120' : 'Chrome/120' }, crypto,
@@ -75,7 +76,7 @@ async function check(browserMode) {
   const savedSettings = await ask({ type: 'settings-save', concurrency: 2, interval: 5, reloadBatch: 1 });
   assert.equal(savedSettings.concurrency, 2);
   assert.equal(storage.interval, 5);
-  assert.equal(alarm, 5, 'saved interval configures automatic synchronization');
+  assert.equal(alarms.get('sync'), 5, 'saved interval configures automatic synchronization');
   maxActive = 0;
   vm.runInContext('cache.clear()', context);
   await vm.runInContext('sync()', context);
@@ -85,7 +86,16 @@ async function check(browserMode) {
   assert.equal(invalidSettings.interval, 0.5);
   assert.equal(invalidSettings.reloadBatch, 3);
   await ask({ type: 'settings-save', concurrency: 1, interval: 0, reloadBatch: 1 });
-  assert.equal(alarm, null, 'manual mode disables the automatic alarm');
+  assert.equal(alarms.has('sync'), false, 'manual mode disables the automatic scan alarm');
+  assert.equal(alarms.get('commands'), 0.5, 'manual mode keeps command polling active');
+  let commandRequest;
+  context.fetch = async (url, options) => { commandRequest = { url, body: JSON.parse(options.body) }; return { ok: true, status: 204 }; };
+  const previousCalls = calls;
+  await vm.runInContext('checkCommands()', context);
+  assert.ok(commandRequest.url.endsWith('/commands'));
+  assert.equal(commandRequest.body.source, id);
+  assert.equal(commandRequest.body.pins, undefined, 'command polling does not resend the tab list');
+  assert.equal(calls, previousCalls, 'command polling does not scan tabs');
 }
 
 async function checkClose(browserMode) {
@@ -130,5 +140,35 @@ async function checkClose(browserMode) {
   assert.deepEqual(removed, [1, 3, 2], 'interrupted commands are not replayed');
   assert.ok(sent.some(item => item.ack?.id === responseCommand.id && item.ack.failed === -1), 'interrupted command is reported');
 }
-(async () => { await check('chrome'); await check('browser'); await checkClose('chrome'); await checkClose('browser'); console.log('Browser synchronization, unloaded tabs and safe tab closing: OK'); })()
+
+async function checkConcurrentHeartbeat() {
+  const storage = { sourceId: '12345678-1234-1234-1234-123456789abc' }, sent = [], events = { addListener() {} };
+  let release, started, polled, removed = 0;
+  const closeStarted = new Promise(resolve => { started = resolve; });
+  const closeGate = new Promise(resolve => { release = resolve; });
+  const commandPolled = new Promise(resolve => { polled = resolve; });
+  const command = { id: 'e'.repeat(32), pins: ['123'], expiresAt: Date.now() + 60000 };
+  const api = {
+    tabs: { query: async () => [{ id: 1, url: 'https://www.pinterest.com/pin/123/', title: 'Pin' }], remove: async () => { removed++; started(); await closeGate; }, onUpdated: events, onRemoved: events },
+    scripting: { executeScript: async () => [{ result: 'https://i.pinimg.com/image.jpg' }] },
+    action: { setBadgeText: async () => {} }, runtime: { onStartup: events, onInstalled: events, onMessage: events },
+    alarms: { onAlarm: events, create() {} }, storage: { local: { get: async () => ({ ...storage }), set: async data => Object.assign(storage, data) } }
+  };
+  const context = { chrome: api, navigator: { userAgent: 'Chrome/120' }, crypto,
+    setTimeout: (fn, ms) => { const timer = setTimeout(fn, ms); timer.unref(); return timer; }, clearTimeout,
+    fetch: async (url, options) => { const body = JSON.parse(options.body); sent.push({ url, body }); if (url.endsWith('/commands')) polled(); return { ok: true, status: 200, json: async () => command }; } };
+  vm.createContext(context); vm.runInContext(source, context);
+  const wait = promise => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error('timed out waiting for extension')), 2000))]);
+  const sync = vm.runInContext('sync()', context);
+  await wait(closeStarted);
+  const heartbeat = vm.runInContext('checkCommands()', context);
+  await wait(commandPolled);
+  assert.equal(sent.find(item => item.url.endsWith('/commands')).body.ack, null, 'an active command is not acknowledged as interrupted');
+  assert.equal(storage.handledClose.finished, false);
+  release(); await wait(Promise.all([sync, heartbeat]));
+  assert.equal(removed, 1, 'concurrent heartbeat does not repeat the close command');
+  assert.equal(storage.handledClose.closed, 1);
+  assert.equal(storage.handledClose.failed, 0);
+}
+(async () => { await check('chrome'); await check('browser'); await checkClose('chrome'); await checkClose('browser'); await checkConcurrentHeartbeat(); console.log('Browser synchronization, unloaded tabs and safe tab closing: OK'); })()
   .catch(error => { console.error(error); process.exitCode = 1; });

@@ -44,6 +44,9 @@ try {
     Assert(registry.Select("chrome").Count == 2, "out-of-order results leave the visible pins intact");
     Assert(BrowserRegistry.Online(registry.Sessions["chrome"], now.AddSeconds(119)), "recent browser is online");
     Assert(!BrowserRegistry.Online(registry.Sessions["chrome"], now.AddSeconds(121)), "inactive browser becomes offline");
+    Assert(registry.Touch("chrome", now.AddMinutes(3)), "heartbeat updates a known browser");
+    Assert(BrowserRegistry.Online(registry.Sessions["chrome"], now.AddMinutes(4)), "heartbeats keep a manually synchronized browser online");
+    Assert(!registry.Touch("unknown", now), "a heartbeat does not create an unknown browser");
 
     var queue = new CloseCommands();
     var start = new DateTimeOffset(now);

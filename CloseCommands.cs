@@ -2,6 +2,7 @@ namespace PinterestDownload;
 
 record CloseCommand(string Id, string[] Pins, long ExpiresAt);
 record CloseAcknowledgement(string Id, int Closed, int Failed);
+record CommandPoll(string Source, CloseAcknowledgement? Ack);
 
 sealed class CloseCommands
 {

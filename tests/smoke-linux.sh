@@ -21,4 +21,6 @@ print(json.dumps({"source": "12345678-1234-1234-1234-123456789abc", "browser": "
 PY
 status=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Origin: chrome-extension://alenpleailakepgbibnkkmhcmkoijmch' -H 'Content-Type: application/json' --data-binary @/tmp/pinterest-smoke-pins.json http://127.0.0.1:17849/pins)
 [ "$status" = 204 ] || { echo "Bulk request failed: $status"; exit 1; }
+status=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Origin: chrome-extension://alenpleailakepgbibnkkmhcmkoijmch' -H 'Content-Type: application/json' --data '{"source":"12345678-1234-1234-1234-123456789abc","ack":null}' http://127.0.0.1:17849/commands)
+[ "$status" = 204 ] || { echo "Command polling failed: $status"; exit 1; }
 echo 'Linux startup and browser connections: OK'

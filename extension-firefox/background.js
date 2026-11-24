@@ -1,7 +1,9 @@
 const api = globalThis.browser || chrome;
 const endpoint = 'http://127.0.0.1:17849/pins';
+const commandEndpoint = 'http://127.0.0.1:17849/commands';
 const cache = new Map();
 let running = false, preparing = false, rerun = false, timer;
+let closingActive = false, checkingCommands = false;
 let closeWork = Promise.resolve();
 let state = { connected: false, phase: 'Ожидание', done: 0, total: 0, browser: '' };
 
@@ -16,6 +18,7 @@ async function getSettings() { return normalizeSettings(await api.storage.local.
 async function configureAlarm(settings) {
   await api.alarms.clear('sync');
   if (settings.interval > 0) await api.alarms.create('sync', { periodInMinutes: settings.interval });
+  await api.alarms.create('commands', { periodInMinutes: 0.5 });
 }
 
 function detectBrowser() {
@@ -30,32 +33,52 @@ function detectBrowser() {
 async function identity() {
   let info = await api.storage.local.get(['sourceId', 'browserName', 'handledClose']);
   if (!info.sourceId) { info.sourceId = crypto.randomUUID(); await api.storage.local.set({ sourceId: info.sourceId }); }
-  if (info.handledClose && !info.handledClose.finished) await api.storage.local.set({ handledClose: { id: info.handledClose.id, closed: 0, failed: -1, finished: true } });
+  if (info.handledClose && !info.handledClose.finished && !closingActive) await api.storage.local.set({ handledClose: { id: info.handledClose.id, closed: 0, failed: -1, finished: true } });
   return { source: info.sourceId, browser: (info.browserName || detectBrowser()).slice(0, 50) };
 }
 async function closeSaved(command) {
-  if (!command || !/^[a-f0-9]{32}$/.test(command.id || '') || !Array.isArray(command.pins) || command.pins.length > 10000 || !Number.isFinite(command.expiresAt) || command.expiresAt <= Date.now()) return;
+  if (!command || !/^[a-f0-9]{32}$/.test(command.id || '') || !Array.isArray(command.pins) || command.pins.length > 10000 || !Number.isFinite(command.expiresAt) || command.expiresAt <= Date.now()) return false;
   const stored = await api.storage.local.get(['handledClose', 'handledCloseIds']);
   const processed = Array.isArray(stored.handledCloseIds) ? stored.handledCloseIds.filter(item => item.expiresAt > Date.now()) : [];
-  if (stored.handledClose?.id === command.id || processed.some(item => item.id === command.id)) return;
+  if (stored.handledClose?.id === command.id || processed.some(item => item.id === command.id)) return false;
   const wanted = new Set(command.pins.filter(id => typeof id === 'string' && /^\d{1,30}$/.test(id)));
   processed.push({ id: command.id, expiresAt: command.expiresAt });
-  await api.storage.local.set({ handledCloseIds: processed, handledClose: { id: command.id, closed: 0, failed: 0, finished: false } });
-  let closed = 0, failed = 0;
+  closingActive = true;
   try {
-    const tabs = await api.tabs.query({ url: 'https://*.pinterest.com/pin/*' });
-    const matching = tabs.filter(tab => {
-      const match = tab.url?.match(/^https:\/\/(?:[a-z0-9-]+\.)*pinterest\.com\/pin\/(\d+)\/?(?:[?#].*)?$/i);
-      return match && wanted.has(match[1]);
-    });
-    for (let i = 0; i < matching.length; i += 6) {
-      await Promise.all(matching.slice(i, i + 6).map(async tab => {
-        try { await api.tabs.remove(tab.id); closed++; } catch (_) { failed++; }
-      }));
-    }
-  } catch (_) { failed = -1; }
-  await api.storage.local.set({ handledClose: { id: command.id, closed, failed, finished: true } });
-  rerun = true;
+    await api.storage.local.set({ handledCloseIds: processed, handledClose: { id: command.id, closed: 0, failed: 0, finished: false } });
+    let closed = 0, failed = 0;
+    try {
+      const tabs = await api.tabs.query({ url: 'https://*.pinterest.com/pin/*' });
+      const matching = tabs.filter(tab => {
+        const match = tab.url?.match(/^https:\/\/(?:[a-z0-9-]+\.)*pinterest\.com\/pin\/(\d+)\/?(?:[?#].*)?$/i);
+        return match && wanted.has(match[1]);
+      });
+      for (let i = 0; i < matching.length; i += 6) {
+        await Promise.all(matching.slice(i, i + 6).map(async tab => {
+          try { await api.tabs.remove(tab.id); closed++; } catch (_) { failed++; }
+        }));
+      }
+    } catch (_) { failed = -1; }
+    await api.storage.local.set({ handledClose: { id: command.id, closed, failed, finished: true } });
+    rerun = true;
+    return true;
+  } finally { closingActive = false; }
+}
+async function acceptClose(command) { closeWork = closeWork.catch(() => {}).then(() => closeSaved(command)); return closeWork; }
+async function checkCommands() {
+  if (checkingCommands) return;
+  checkingCommands = true;
+  let executed = false;
+  try {
+    const who = await identity();
+    const handled = (await api.storage.local.get(['handledClose'])).handledClose;
+    const ack = handled?.finished ? { id: handled.id, closed: handled.closed, failed: handled.failed } : null;
+    const response = await fetch(commandEndpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source: who.source, ack }) });
+    state.connected = response.ok;
+    if (response.ok && response.status === 200) executed = await acceptClose(await response.json());
+  } catch (_) { state.connected = false; }
+  finally { checkingCommands = false; }
+  if (executed) setTimeout(checkCommands, 400);
 }
 async function sync() {
   if (running || preparing) { rerun = true; return; }
@@ -81,7 +104,7 @@ async function sync() {
       const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...who, generation, done: state.done, total: state.total, pins: items.map(x => x.pin), ack }) });
       state.connected = response.ok;
       if (!response.ok) throw new Error('Приложение отклонило подключение');
-      if (response.status === 200) { const command = await response.json(); closeWork = closeWork.catch(() => {}).then(() => closeSaved(command)); await closeWork; }
+      if (response.status === 200) await acceptClose(await response.json());
     }
     try { await send(); } catch (_) { state.connected = false; }
     let next = 0;
@@ -149,6 +172,6 @@ api.runtime.onMessage.addListener((message, sender, respond) => {
 });
 api.tabs.onUpdated.addListener((id, change) => { if (change.status === 'loading') cache.delete(id); if (change.status === 'complete') schedule(); });
 api.tabs.onRemoved.addListener(id => { cache.delete(id); schedule(); });
-api.runtime.onStartup.addListener(schedule);
+api.runtime.onStartup.addListener(() => { getSettings().then(configureAlarm); schedule(); });
 api.runtime.onInstalled.addListener(() => { getSettings().then(configureAlarm); schedule(); });
-api.alarms.onAlarm.addListener(schedule);
+api.alarms.onAlarm.addListener(alarm => { if (alarm.name === 'commands') checkCommands(); else if (alarm.name === 'sync') schedule(); });

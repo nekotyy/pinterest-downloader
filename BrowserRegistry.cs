@@ -26,6 +26,13 @@ sealed class BrowserRegistry
         return true;
     }
 
+    public bool Touch(string source, DateTime now)
+    {
+        if (!sessions.TryGetValue(source, out var session)) return false;
+        session.LastSeen = now;
+        return true;
+    }
+
     public Dictionary<string, Pin> Select(string? source)
     {
         var result = new Dictionary<string, Pin>();

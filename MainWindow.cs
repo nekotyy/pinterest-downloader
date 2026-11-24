@@ -152,7 +152,8 @@ sealed class MainWindow : Window
         var req = context.Request; var res = context.Response;
         try {
             var origin = req.Headers["Origin"];
-            if ((origin != ExtensionOrigin && !Regex.IsMatch(origin ?? "", @"^moz-extension://[0-9a-f-]{36}$")) || req.Url?.AbsolutePath != "/pins") { res.StatusCode = 403; return; }
+            var path = req.Url?.AbsolutePath;
+            if ((origin != ExtensionOrigin && !Regex.IsMatch(origin ?? "", @"^moz-extension://[0-9a-f-]{36}$")) || (path != "/pins" && path != "/commands")) { res.StatusCode = 403; return; }
             res.Headers.Add("Access-Control-Allow-Origin", origin);
             res.Headers.Add("Access-Control-Allow-Methods", "POST, OPTIONS");
             res.Headers.Add("Access-Control-Allow-Headers", "Content-Type");
@@ -162,6 +163,13 @@ sealed class MainWindow : Window
             var body = await reader.ReadToEndAsync().ConfigureAwait(false);
             using var document = JsonDocument.Parse(body);
             var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+            if (path == "/commands") {
+                var poll = JsonSerializer.Deserialize<CommandPoll>(body, options);
+                if (poll == null || !Guid.TryParse(poll.Source, out _)) { res.StatusCode = 400; return; }
+                Dispatcher.UIThread.Post(() => { if (browsers.Touch(poll.Source, DateTime.UtcNow)) RefreshBrowserList(); });
+                await RespondToCommands(res, poll.Source, poll.Ack).ConfigureAwait(false);
+                return;
+            }
             SyncPayload? payload;
             if (document.RootElement.ValueKind == JsonValueKind.Array) {
                 var legacyPins = JsonSerializer.Deserialize<List<Pin>>(body, options) ?? new();
@@ -172,23 +180,24 @@ sealed class MainWindow : Window
             }
             var valid = payload.Pins.Where(p => p != null && p.Id is not null && Regex.IsMatch(p.Id, @"^\d{1,30}$") && IsPin(p.Url, p.Id)).Take(10000)
                 .Select(p => p with { Title = (p.Title ?? "Пин")[..Math.Min((p.Title ?? "Пин").Length, 300)], Image = IsImage(p.Image) ? p.Image : "" }).ToList();
-            var now = DateTimeOffset.UtcNow;
-            if (payload.Ack != null && closeCommands.Acknowledge(payload.Source, payload.Ack, now)) {
-                var ack = payload.Ack;
-                Dispatcher.UIThread.Post(() => notice.Text = ack.Failed < 0 ? "Расширение прервало операцию закрытия. Проверьте вкладки." : $"Закрыто вкладок: {ack.Closed}. Ошибок: {ack.Failed}.");
-            }
-            var command = closeCommands.Pending(payload.Source, now);
             Dispatcher.UIThread.Post(() => {
                 if (!browsers.Update(payload, valid, DateTime.UtcNow)) return;
                 RefreshBrowserList(); ApplyBrowserFilter();
             });
-            if (command == null) res.StatusCode = 204;
-            else {
-                var bytes = JsonSerializer.SerializeToUtf8Bytes(command, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
-                res.StatusCode = 200; res.ContentType = "application/json"; res.ContentLength64 = bytes.Length;
-                await res.OutputStream.WriteAsync(bytes).ConfigureAwait(false);
-            }
+            await RespondToCommands(res, payload.Source, payload.Ack).ConfigureAwait(false);
         } catch { res.StatusCode = 400; } finally { res.Close(); }
+    }
+
+    async Task RespondToCommands(HttpListenerResponse response, string source, CloseAcknowledgement? acknowledgement)
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (acknowledgement != null && closeCommands.Acknowledge(source, acknowledgement, now))
+            Dispatcher.UIThread.Post(() => notice.Text = acknowledgement.Failed < 0 ? "Расширение прервало операцию закрытия. Проверьте вкладки." : $"Закрыто вкладок: {acknowledgement.Closed}. Ошибок: {acknowledgement.Failed}.");
+        var command = closeCommands.Pending(source, now);
+        if (command == null) { response.StatusCode = 204; return; }
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(command, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+        response.StatusCode = 200; response.ContentType = "application/json"; response.ContentLength64 = bytes.Length;
+        await response.OutputStream.WriteAsync(bytes).ConfigureAwait(false);
     }
 
     static bool IsPin(string? value, string id) => Uri.TryCreate(value, UriKind.Absolute, out var uri) && uri.Scheme == "https" && (uri.Host == "pinterest.com" || uri.Host.EndsWith(".pinterest.com", StringComparison.OrdinalIgnoreCase)) && uri.AbsolutePath.TrimEnd('/') == "/pin/" + id;
