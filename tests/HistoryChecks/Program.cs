@@ -1,0 +1,99 @@
+using PinterestDownload;
+
+var root = Path.Combine(Path.GetTempPath(), "pinterest-history-test-" + Guid.NewGuid().ToString("N"));
+Directory.CreateDirectory(root);
+try {
+    var historyFile = Path.Combine(root, "settings", "history.json");
+    var firstFolder = Path.Combine(root, "first");
+    var secondFolder = Path.Combine(root, "second");
+    Directory.CreateDirectory(firstFolder); Directory.CreateDirectory(secondFolder);
+    var first = Path.Combine(firstFolder, "pinterest_123.jpg");
+    File.WriteAllText(first, "original");
+
+    var history = new DownloadHistory(historyFile);
+    Assert(history.Find("123", firstFolder) == first, "existing file in the selected folder is detected");
+    history.Record("123", first);
+    history = new DownloadHistory(historyFile);
+    Assert(history.Find("123", secondFolder) == first, "history is retained across restarts and folder changes");
+    Assert(history.NextPath(firstFolder, "123", ".jpg") == Path.Combine(firstFolder, "pinterest_123_2.jpg"), "repeat download does not replace the original");
+    File.WriteAllText(Path.Combine(firstFolder, "pinterest_123_2.jpg"), "copy");
+    Assert(history.NextPath(firstFolder, "123", ".jpg") == Path.Combine(firstFolder, "pinterest_123_3.jpg"), "repeat download avoids existing copies");
+    File.Delete(first);
+    Assert(history.Find("123", secondFolder) == null, "history does not claim a deleted file exists");
+
+    File.WriteAllText(historyFile, "not valid json");
+    history = new DownloadHistory(historyFile);
+    Assert(history.LoadError != null, "invalid history is reported");
+    try { history.Record("123", first); throw new Exception("invalid history was overwritten"); }
+    catch (InvalidOperationException) { }
+    Assert(File.ReadAllText(historyFile) == "not valid json", "invalid history is preserved");
+
+    var registry = new BrowserRegistry();
+    var now = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+    var missingImage = new Pin("123", "https://pinterest.com/pin/123/", "First", "");
+    var withImage = missingImage with { Image = "https://i.pinimg.com/123.jpg" };
+    var other = new Pin("456", "https://pinterest.com/pin/456/", "Other", "");
+    var chrome = new SyncPayload("chrome", "Chrome", 100, 2, 2, new() { missingImage, other });
+    var firefox = new SyncPayload("firefox", "Firefox", 101, 1, 1, new() { withImage });
+    Assert(registry.Update(chrome, chrome.Pins, now), "Chrome is accepted");
+    Assert(registry.Update(firefox, firefox.Pins, now), "Firefox is accepted");
+    Assert(registry.Select(null).Count == 2 && registry.Select(null)["123"].Image == withImage.Image, "all browsers are combined and the available preview is preferred");
+    Assert(registry.Select("firefox").Count == 1 && registry.Select("chrome").Count == 2, "browser filtering keeps sources separate");
+    Assert(!registry.Update(chrome with { Generation = 99, Done = 0 }, new(), now), "an old synchronization does not replace a newer result");
+    Assert(!registry.Update(chrome with { Done = 1 }, new(), now), "out-of-order progress does not replace a newer result");
+    Assert(registry.Select("chrome").Count == 2, "out-of-order results leave the visible pins intact");
+    Assert(BrowserRegistry.Online(registry.Sessions["chrome"], now.AddSeconds(119)), "recent browser is online");
+    Assert(!BrowserRegistry.Online(registry.Sessions["chrome"], now.AddSeconds(121)), "inactive browser becomes offline");
+
+    var downloadFolder = Path.Combine(root, "downloads");
+    var downloadHistory = new DownloadHistory(Path.Combine(root, "downloads-history.json"));
+    var handler = new FakeImageHandler();
+    using var client = new HttpClient(handler);
+    var downloader = new ImageDownloader(client, downloadHistory);
+    var downloadable = new Pin("789", "https://pinterest.com/pin/789/", "Image", "https://i.pinimg.com/image.jpg");
+    var result = await downloader.Download(downloadable, downloadFolder, false, _ => { });
+    Assert(result.Status == "Сохранено" && File.Exists(Path.Combine(downloadFolder, "pinterest_789.jpg")), "image is saved to the selected folder");
+    result = await downloader.Download(downloadable, secondFolder, false, _ => { });
+    Assert(result.Status.StartsWith("Уже скачано") && handler.Requests == 1, "an existing download is reported without another network request");
+    result = await downloader.Download(downloadable, downloadFolder, true, _ => { });
+    Assert(result.Status == "Сохранено" && File.Exists(Path.Combine(downloadFolder, "pinterest_789_2.jpg")), "repeat download saves a separate copy");
+    Assert(File.ReadAllBytes(Path.Combine(downloadFolder, "pinterest_789.jpg")).SequenceEqual(new byte[] { 1, 2, 3 }), "repeat download leaves the original intact");
+    handler.Fail = true;
+    result = await downloader.Download(downloadable with { Id = "999" }, downloadFolder, false, _ => { });
+    Assert(result.Status.StartsWith("Ошибка:") && !Directory.EnumerateFiles(downloadFolder, "pinterest_999*").Any(), "network failure does not leave an incomplete file");
+    handler.Fail = false; handler.BreakStream = true;
+    result = await downloader.Download(downloadable with { Id = "998" }, downloadFolder, false, _ => { });
+    Assert(result.Status.StartsWith("Ошибка:") && !Directory.EnumerateFiles(downloadFolder, ".pinterest_*.tmp").Any(), "interrupted downloads remove temporary files");
+    var requestCount = handler.Requests;
+    result = await downloader.Download(downloadable with { Id = "997", Image = "https://example.com/image.jpg" }, downloadFolder, false, _ => { });
+    Assert(result.Status.StartsWith("Ошибка:") && handler.Requests == requestCount, "non-Pinterest image hosts are rejected");
+    Console.WriteLine("Download history, browser status and image downloads: OK");
+} finally { Directory.Delete(root, true); }
+
+static void Assert(bool condition, string message) { if (!condition) throw new Exception(message); }
+
+sealed class FakeImageHandler : HttpMessageHandler
+{
+    public int Requests;
+    public bool Fail;
+    public bool BreakStream;
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        Requests++;
+        HttpContent content = BreakStream ? new StreamContent(new FailingStream()) : new ByteArrayContent(new byte[] { 1, 2, 3 });
+        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("image/jpeg");
+        return Task.FromResult(new HttpResponseMessage(Fail ? System.Net.HttpStatusCode.BadGateway : System.Net.HttpStatusCode.OK) { Content = content });
+    }
+}
+
+sealed class FailingStream : MemoryStream
+{
+    bool first = true;
+    public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+    {
+        if (!first) return ValueTask.FromException<int>(new IOException("Interrupted"));
+        first = false;
+        buffer.Span[0] = 1;
+        return ValueTask.FromResult(1);
+    }
+}

@@ -11,19 +11,9 @@ using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using Avalonia.Platform;
 using Avalonia.Styling;
+using Avalonia.Automation;
 
 namespace PinterestDownload;
-
-record Pin(string Id, string Url, string Title, string Image);
-record SyncPayload(string Source, string Browser, long Generation, int Done, int Total, List<Pin> Pins);
-sealed class BrowserSession
-{
-    public string Name = "Браузер";
-    public DateTime LastSeen;
-    public long Generation;
-    public int Done, Total;
-    public List<Pin> Pins = new();
-}
 
 sealed class MainWindow : Window
 {
@@ -32,8 +22,9 @@ sealed class MainWindow : Window
     readonly HttpClient client = new(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(30) };
     readonly string settingsFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PinterestDownload", "settings.json");
     readonly string historyFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PinterestDownload", "history.json");
-    Dictionary<string, string> history = new();
-    readonly Dictionary<string, BrowserSession> browsers = new();
+    readonly DownloadHistory history;
+    readonly ImageDownloader downloader;
+    readonly BrowserRegistry browsers = new();
     readonly Dictionary<string, Pin> pins = new();
     readonly HashSet<string> selected = new();
     readonly Dictionary<string, TextBlock> statusLabels = new();
@@ -63,16 +54,19 @@ sealed class MainWindow : Window
     {
         if (string.IsNullOrEmpty(folder)) folder = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         try { if (File.Exists(settingsFile)) folder = JsonSerializer.Deserialize<string>(File.ReadAllText(settingsFile)) ?? folder; } catch { }
-        try { if (File.Exists(historyFile)) history = JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(historyFile)) ?? new(); } catch { }
+        history = new DownloadHistory(historyFile);
+        downloader = new ImageDownloader(client, history);
+        if (history.LoadError != null) notice.Text = "Не удалось прочитать историю загрузок: " + history.LoadError;
         Title = "Pinterest Download"; Width = 1200; Height = 800; MinWidth = 700; MinHeight = 500;
         try { Icon = new WindowIcon(AssetLoader.Open(new Uri("avares://PinterestDownload/docs/icon.png"))); } catch { }
         var choose = new Button { Content = "Изменить папку" };
+        AutomationProperties.SetName(browserFilter, "Выбор браузера");
         choose.Click += async (_, _) => await ChooseFolder();
         download.Click += async (_, _) => await DownloadSelected();
         select.Click += (_, _) => { if (selected.Count == pins.Count) selected.Clear(); else foreach (var id in pins.Keys) selected.Add(id); RenderPins(); };
         more.Click += (_, _) => { visibleCount += 100; RenderPins(); };
         previous.Click += (_, _) => { visibleCount = Math.Max(100, visibleCount - 100); RenderPins(); };
-        browserFilter.SelectionChanged += (_, _) => { visibleCount = 100; ApplyBrowserFilter(); };
+        browserFilter.SelectionChanged += (_, _) => { if (!rebuildingBrowsers) { visibleCount = 100; ApplyBrowserFilter(); } };
         var top = new DockPanel { LastChildFill = true };
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, Children = { choose, download } };
         DockPanel.SetDock(buttons, Dock.Right); top.Children.Add(buttons); top.Children.Add(folderLabel);
@@ -119,7 +113,7 @@ sealed class MainWindow : Window
     {
         while (listener.IsListening) {
             HttpListenerContext context;
-            try { context = await listener.GetContextAsync(); } catch { break; }
+            try { context = await listener.GetContextAsync().ConfigureAwait(false); } catch { break; }
             _ = HandleRequest(context);
         }
     }
@@ -136,7 +130,7 @@ sealed class MainWindow : Window
             if (req.HttpMethod == "OPTIONS") { res.StatusCode = 204; return; }
             if (req.HttpMethod != "POST" || req.ContentLength64 < 0 || req.ContentLength64 > 10_000_000) { res.StatusCode = 400; return; }
             using var reader = new StreamReader(req.InputStream, Encoding.UTF8);
-            var body = await reader.ReadToEndAsync();
+            var body = await reader.ReadToEndAsync().ConfigureAwait(false);
             using var document = JsonDocument.Parse(body);
             var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
             SyncPayload? payload;
@@ -150,10 +144,7 @@ sealed class MainWindow : Window
             var valid = payload.Pins.Where(p => p != null && p.Id is not null && Regex.IsMatch(p.Id, @"^\d{1,30}$") && IsPin(p.Url, p.Id)).Take(10000)
                 .Select(p => p with { Title = (p.Title ?? "Пин")[..Math.Min((p.Title ?? "Пин").Length, 300)], Image = IsImage(p.Image) ? p.Image : "" }).ToList();
             Dispatcher.UIThread.Post(() => {
-                if (!browsers.TryGetValue(payload.Source, out var session)) browsers[payload.Source] = session = new BrowserSession();
-                if (payload.Generation < session.Generation || (payload.Generation == session.Generation && payload.Done < session.Done)) return;
-                session.Name = payload.Browser[..Math.Min(payload.Browser.Length, 50)]; session.LastSeen = DateTime.UtcNow;
-                session.Generation = payload.Generation; session.Done = payload.Done; session.Total = payload.Total; session.Pins = valid;
+                if (!browsers.Update(payload, valid, DateTime.UtcNow)) return;
                 RefreshBrowserList(); ApplyBrowserFilter();
             });
             res.StatusCode = 204;
@@ -165,18 +156,18 @@ sealed class MainWindow : Window
 
     void RefreshBrowserList()
     {
-        bool Online(BrowserSession session) => DateTime.UtcNow - session.LastSeen < TimeSpan.FromMinutes(2);
-        var signature = string.Join("|", browsers.Select(x => $"{x.Key}:{x.Value.Name}:{Online(x.Value)}"));
+        bool Online(BrowserSession session) => BrowserRegistry.Online(session, DateTime.UtcNow);
+        var signature = string.Join("|", browsers.Sessions.Select(x => $"{x.Key}:{x.Value.Name}:{Online(x.Value)}"));
         if (signature != browserSignature || browserFilter.Items.Count == 0) {
             var previous = (browserFilter.SelectedItem as ComboBoxItem)?.Tag as string;
             rebuildingBrowsers = true; browserFilter.Items.Clear();
             browserFilter.Items.Add(new ComboBoxItem { Content = "Все браузеры", Tag = "" });
-            foreach (var entry in browsers) browserFilter.Items.Add(new ComboBoxItem { Content = $"{entry.Value.Name}, {(Online(entry.Value) ? "подключён" : "нет связи")}, {entry.Key[..Math.Min(4, entry.Key.Length)]}", Tag = entry.Key });
+            foreach (var entry in browsers.Sessions) browserFilter.Items.Add(new ComboBoxItem { Content = $"{entry.Value.Name}, {(Online(entry.Value) ? "подключён" : "нет связи")}, {entry.Key[..Math.Min(4, entry.Key.Length)]}", Tag = entry.Key });
             browserFilter.SelectedItem = browserFilter.Items.Cast<ComboBoxItem>().FirstOrDefault(x => (string?)x.Tag == previous) ?? browserFilter.Items[0];
             rebuildingBrowsers = false; browserSignature = signature;
         }
-        var active = browsers.Values.Count(Online);
-        var pending = browsers.Values.Where(Online).Where(x => x.Done < x.Total).Select(x => $"{x.Name}: {x.Done}/{x.Total}");
+        var active = browsers.Sessions.Values.Count(Online);
+        var pending = browsers.Sessions.Values.Where(Online).Where(x => x.Done < x.Total).Select(x => $"{x.Name}: {x.Done}/{x.Total}");
         browserStatus.Text = active == 0 ? "Расширение не подключено" : $"Подключено: {active}" + (pending.Any() ? ", Обработка: " + string.Join(", ", pending) : "");
     }
 
@@ -185,10 +176,7 @@ sealed class MainWindow : Window
         if (rebuildingBrowsers) return;
         var source = (browserFilter.SelectedItem as ComboBoxItem)?.Tag as string;
         var old = pins.Keys.ToHashSet(); pins.Clear();
-        foreach (var entry in browsers) {
-            if (!string.IsNullOrEmpty(source) && entry.Key != source) continue;
-            foreach (var pin in entry.Value.Pins) if (!pins.TryGetValue(pin.Id, out var existing) || (string.IsNullOrEmpty(existing.Image) && !string.IsNullOrEmpty(pin.Image))) pins[pin.Id] = pin;
-        }
+        foreach (var entry in browsers.Select(source)) pins[entry.Key] = entry.Value;
         selected.RemoveWhere(id => !pins.ContainsKey(id)); foreach (var id in pins.Keys) if (!old.Contains(id)) selected.Add(id);
         var current = JsonSerializer.Serialize(pins.Values); if (current != lastList) { lastList = current; RenderPins(); }
     }
@@ -235,23 +223,7 @@ sealed class MainWindow : Window
         } catch { return null; } finally { previewLimit.Release(); }
     }
 
-    string? DownloadedPath(string id)
-    {
-        if (history.TryGetValue(id, out var saved) && File.Exists(saved)) return saved;
-        foreach (var ext in new[] { ".jpg", ".png", ".webp", ".gif" }) {
-            var candidate = Path.Combine(folder, "pinterest_" + id + ext);
-            if (File.Exists(candidate)) return candidate;
-        }
-        return null;
-    }
-
-    void SaveHistory()
-    {
-        try {
-            Directory.CreateDirectory(Path.GetDirectoryName(historyFile)!);
-            var temp = historyFile + ".tmp"; File.WriteAllText(temp, JsonSerializer.Serialize(history)); File.Move(temp, historyFile, true);
-        } catch (Exception ex) { notice.Text = "Файл сохранён, но историю сохранить не удалось: " + ex.Message; }
-    }
+    string? DownloadedPath(string id) => history.Find(id, folder);
 
     void SetStatus(string id, string status) { statuses[id] = status; if (statusLabels.TryGetValue(id, out var label)) label.Text = status; }
     async Task DownloadSelected()
@@ -263,29 +235,8 @@ sealed class MainWindow : Window
     }
     async Task Download(Pin pin)
     {
-        try {
-            var oldPath = DownloadedPath(pin.Id);
-            if (oldPath != null && repeat.IsChecked != true) { SetStatus(pin.Id, "Уже скачано: " + oldPath); return; }
-            if (!IsImage(pin.Image)) throw new Exception("Откройте вкладку, чтобы загрузить изображение");
-            SetStatus(pin.Id, "Скачивание…");
-            using var response = await client.GetAsync(pin.Image, HttpCompletionOption.ResponseHeadersRead); response.EnsureSuccessStatusCode();
-            var ext = response.Content.Headers.ContentType?.MediaType switch { "image/jpeg" => ".jpg", "image/png" => ".png", "image/webp" => ".webp", "image/gif" => ".gif", _ => throw new Exception("Неподдерживаемый формат изображения") };
-            if (response.Content.Headers.ContentLength > 50_000_000) throw new Exception("Изображение слишком большое");
-            Directory.CreateDirectory(folder); string path = Path.Combine(folder, "pinterest_" + pin.Id + ext);
-            if (File.Exists(path)) {
-                if (repeat.IsChecked != true) { SetStatus(pin.Id, "Уже скачано: " + path); return; }
-                for (int i = 2; File.Exists(path); i++) path = Path.Combine(folder, "pinterest_" + pin.Id + "_" + i + ext);
-            }
-            var temp = Path.Combine(folder, ".pinterest_" + Guid.NewGuid().ToString("N") + ".tmp");
-            try {
-                await using (var input = await response.Content.ReadAsStreamAsync())
-                await using (var output = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None)) {
-                    var buffer = new byte[81920]; long total = 0; int n;
-                    while ((n = await input.ReadAsync(buffer)) > 0) { total += n; if (total > 50_000_000) throw new Exception("Изображение слишком большое"); await output.WriteAsync(buffer.AsMemory(0, n)); SetStatus(pin.Id, $"Скачивание: {total / 1024} КБ" + (response.Content.Headers.ContentLength is long length ? $" из {length / 1024} КБ" : "")); }
-                }
-                File.Move(temp, path);
-            } finally { if (File.Exists(temp)) File.Delete(temp); }
-            history[pin.Id] = path; SaveHistory(); SetStatus(pin.Id, "Сохранено");
-        } catch (Exception ex) { SetStatus(pin.Id, "Ошибка: " + ex.Message); }
+        var result = await downloader.Download(pin, folder, repeat.IsChecked == true, status => SetStatus(pin.Id, status));
+        if (result.Warning != null) notice.Text = result.Warning;
+        SetStatus(pin.Id, result.Status);
     }
 }
