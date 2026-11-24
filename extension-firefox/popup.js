@@ -1,6 +1,12 @@
 const api = globalThis.browser || chrome;
 const connection = document.querySelector('#connection'), progress = document.querySelector('#progress'), browser = document.querySelector('#browser');
 let chosen = false;
+async function readSettings() {
+  try {
+    const settings = await api.runtime.sendMessage({ type: 'settings-get' });
+    for (const name of ['concurrency', 'interval', 'reloadBatch']) document.querySelector(`#${name}`).value = String(settings[name]);
+  } catch (_) { document.querySelector('#settings-status').textContent = 'Не удалось прочитать настройки.'; }
+}
 async function refresh() {
   try {
     const state = await api.runtime.sendMessage({ type: 'status' });
@@ -24,4 +30,11 @@ document.querySelector('#load').addEventListener('click', async event => {
   button.disabled = false;
   refresh();
 });
-refresh(); setInterval(refresh, 1000);
+document.querySelector('#save').addEventListener('click', async () => {
+  const values = Object.fromEntries(['concurrency', 'interval', 'reloadBatch'].map(name => [name, Number(document.querySelector(`#${name}`).value)]));
+  try {
+    const result = await api.runtime.sendMessage({ type: 'settings-save', ...values });
+    document.querySelector('#settings-status').textContent = result.error ? 'Не удалось сохранить настройки.' : 'Настройки сохранены.';
+  } catch (_) { document.querySelector('#settings-status').textContent = 'Не удалось сохранить настройки.'; }
+});
+readSettings(); refresh(); setInterval(refresh, 1000);

@@ -13,7 +13,7 @@ for (const folder of ['extension', 'extension-firefox']) {
 }
 
 async function check(browserMode) {
-  let messageListener, tabUpdated, sent = [], active = 0, maxActive = 0, calls = 0, reloads = 0;
+  let messageListener, tabUpdated, sent = [], active = 0, maxActive = 0, calls = 0, reloads = 0, alarm = null;
   const events = { addListener() {} };
   const tabs = Array.from({ length: 1000 }, (_, i) => ({ id: i + 1, url: `https://ru.pinterest.com/pin/${i + 1}/`, title: `Пин ${i + 1}`, discarded: i === 9 }));
   tabs.push({ id: 1001, url: tabs[0].url, title: 'Дубликат' }, { id: 1002, url: 'https://evil.example/pin/55/' });
@@ -23,7 +23,7 @@ async function check(browserMode) {
     scripting: { executeScript: async ({ target }) => { active++; calls++; maxActive = Math.max(active, maxActive); await Promise.resolve(); active--; if (target.tabId === 4) throw Error('unavailable'); return [{ result: `https://i.pinimg.com/${target.tabId}.jpg` }]; } },
     action: { setBadgeText: async () => {} },
     runtime: { onStartup: events, onInstalled: events, onMessage: { addListener(fn) { messageListener = fn; } } },
-    alarms: { onAlarm: events, create() {} },
+    alarms: { onAlarm: events, create: (name, value) => { alarm = value.periodInMinutes; }, clear: async () => { alarm = null; } },
     storage: { local: { get: async () => ({ ...storage }), set: async data => Object.assign(storage, data) } }
   };
   const context = { [browserMode]: api, navigator: { userAgent: browserMode === 'browser' ? 'Firefox/120' : 'Chrome/120' }, crypto,
@@ -31,6 +31,10 @@ async function check(browserMode) {
     fetch: async (url, options) => { sent.push(JSON.parse(options.body)); return { ok: true }; } };
   vm.createContext(context);
   vm.runInContext(source, context);
+  const ask = message => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('extension did not respond')), 1000);
+    messageListener(message, {}, value => { clearTimeout(timer); resolve(value); });
+  });
   await vm.runInContext('sync()', context);
   const result = sent.at(-1);
   assert.equal(result.pins.length, 1000);
@@ -68,6 +72,20 @@ async function check(browserMode) {
   api.tabs.reload = async () => { throw new Error('not allowed'); };
   const failedLoad = await new Promise(resolve => messageListener({ type: 'load-discarded' }, {}, resolve));
   assert.equal(failedLoad.failed, 1, 'reload failures are reported');
+  const savedSettings = await ask({ type: 'settings-save', concurrency: 2, interval: 5, reloadBatch: 1 });
+  assert.equal(savedSettings.concurrency, 2);
+  assert.equal(storage.interval, 5);
+  assert.equal(alarm, 5, 'saved interval configures automatic synchronization');
+  maxActive = 0;
+  vm.runInContext('cache.clear()', context);
+  await vm.runInContext('sync()', context);
+  assert.ok(maxActive <= 2, 'the chosen scan concurrency limits active requests');
+  const invalidSettings = await ask({ type: 'settings-save', concurrency: 999, interval: -1, reloadBatch: 999 });
+  assert.equal(invalidSettings.concurrency, 6);
+  assert.equal(invalidSettings.interval, 0.5);
+  assert.equal(invalidSettings.reloadBatch, 3);
+  await ask({ type: 'settings-save', concurrency: 1, interval: 0, reloadBatch: 1 });
+  assert.equal(alarm, null, 'manual mode disables the automatic alarm');
 }
 
 async function checkClose(browserMode) {

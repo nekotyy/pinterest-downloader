@@ -2,4 +2,10 @@
 <header><img src="icon128.png" alt=""><div><strong>Pinterest Download</strong><span>nekoty developer</span></div></header>
 <main><div id="connection" class="status">Проверяем подключение...</div><p id="progress">Ожидаем данные</p>
 <label for="browser">Ваш браузер</label><select id="browser"><option>Chrome / Chromium</option><option>Google Chrome</option><option>Microsoft Edge</option><option>Яндекс Браузер</option><option>Brave</option><option>Opera</option><option>Helium</option><option>Firefox</option><option>Другой браузер</option></select>
-<button id="sync">Обновить вкладки</button><button id="load" class="secondary">Загрузить выгруженные вкладки</button><p id="result" role="status"></p><p class="hint">Команда загрузки перезагружает выгруженные вкладки Pinterest. Приложение должно быть запущено.</p></main><script src="popup.js"></script></body></html>
+<button id="sync">Обновить вкладки</button><button id="load" class="secondary">Загрузить выгруженные вкладки</button><p id="result" role="status"></p>
+<details><summary>Настройки обработки</summary>
+<label for="concurrency">Проверять вкладок одновременно</label><select id="concurrency"><option value="1">1</option><option value="2">2</option><option value="4">4</option><option value="6">6</option><option value="8">8</option></select>
+<label for="interval">Обновлять список</label><select id="interval"><option value="0.5">Каждые 30 секунд</option><option value="1">Каждую минуту</option><option value="5">Каждые 5 минут</option><option value="10">Каждые 10 минут</option><option value="0">Только вручную</option></select>
+<label for="reloadBatch">Загружать выгруженных вкладок за раз</label><select id="reloadBatch"><option value="1">1</option><option value="3">3</option><option value="6">6</option></select>
+<button id="save" class="secondary">Сохранить настройки</button><p id="settings-status" role="status"></p>
+</details><p class="hint">Команда загрузки перезагружает выгруженные вкладки Pinterest. При ручном обновлении команда закрытия ожидает обновления списка.</p></main><script src="popup.js"></script></body></html>

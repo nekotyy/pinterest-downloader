@@ -5,6 +5,19 @@ let running = false, preparing = false, rerun = false, timer;
 let closeWork = Promise.resolve();
 let state = { connected: false, phase: 'Ожидание', done: 0, total: 0, browser: '' };
 
+function normalizeSettings(values) {
+  return {
+    concurrency: [1, 2, 4, 6, 8].includes(values.concurrency) ? values.concurrency : 6,
+    interval: [0, 0.5, 1, 5, 10].includes(values.interval) ? values.interval : 0.5,
+    reloadBatch: [1, 3, 6].includes(values.reloadBatch) ? values.reloadBatch : 3
+  };
+}
+async function getSettings() { return normalizeSettings(await api.storage.local.get(['concurrency', 'interval', 'reloadBatch'])); }
+async function configureAlarm(settings) {
+  await api.alarms.clear('sync');
+  if (settings.interval > 0) await api.alarms.create('sync', { periodInMinutes: settings.interval });
+}
+
 function detectBrowser() {
   const ua = navigator.userAgent;
   if (/Firefox\//i.test(ua)) return 'Firefox';
@@ -49,6 +62,7 @@ async function sync() {
   running = true;
   try {
     const who = await identity();
+    const settings = await getSettings();
     const generation = Date.now();
     const tabs = await api.tabs.query({ url: 'https://*.pinterest.com/pin/*' });
     const seen = new Set(), items = [];
@@ -93,7 +107,7 @@ async function sync() {
         if (state.done % batchSize === 0) { try { await send(); } catch (_) { state.connected = false; } }
       }
     }
-    await Promise.all(Array.from({ length: Math.min(6, items.length) }, worker));
+    await Promise.all(Array.from({ length: Math.min(settings.concurrency, items.length) }, worker));
     state.phase = 'Готово';
     try { await send(); } catch (_) { state.connected = false; }
     await api.action.setBadgeText({ text: state.connected ? '' : '!' });
@@ -107,14 +121,15 @@ async function loadDiscarded() {
   let failed = 0;
   try {
     const tabs = await api.tabs.query({ url: 'https://*.pinterest.com/pin/*' });
+    const settings = await getSettings();
     const targets = tabs.filter(tab => (tab.discarded || tab.frozen) && /^https:\/\/(?:[a-z0-9-]+\.)*pinterest\.com\/pin\/\d+\/?(?:[?#].*)?$/i.test(tab.url || ''));
     state = { ...state, phase: 'Загрузка вкладок', done: 0, total: targets.length };
-    for (let i = 0; i < targets.length; i += 3) {
-      await Promise.all(targets.slice(i, i + 3).map(async tab => {
+    for (let i = 0; i < targets.length; i += settings.reloadBatch) {
+      await Promise.all(targets.slice(i, i + settings.reloadBatch).map(async tab => {
         try { cache.delete(tab.id); await api.tabs.reload(tab.id); } catch (_) { failed++; }
         state.done++;
       }));
-      if (i + 3 < targets.length) await new Promise(resolve => setTimeout(resolve, 750));
+      if (i + settings.reloadBatch < targets.length) await new Promise(resolve => setTimeout(resolve, 750));
     }
     return { total: targets.length, failed };
   } catch (_) { return { error: true }; }
@@ -124,10 +139,16 @@ api.runtime.onMessage.addListener((message, sender, respond) => {
   if (message?.type === 'status') { respond(state); return; }
   if (message?.type === 'sync') { schedule(); respond({ ok: true }); return; }
   if (message?.type === 'load-discarded') { loadDiscarded().then(respond); return true; }
+  if (message?.type === 'settings-get') { getSettings().then(respond).catch(() => respond({ error: true })); return true; }
+  if (message?.type === 'settings-save') {
+    const settings = normalizeSettings(message);
+    api.storage.local.set(settings).then(() => configureAlarm(settings)).then(() => { schedule(); respond(settings); }).catch(() => respond({ error: true }));
+    return true;
+  }
   if (message?.type === 'browser') { api.storage.local.set({ browserName: String(message.name || '').slice(0, 50) }).then(() => { schedule(); respond({ ok: true }); }); return true; }
 });
 api.tabs.onUpdated.addListener((id, change) => { if (change.status === 'loading') cache.delete(id); if (change.status === 'complete') schedule(); });
 api.tabs.onRemoved.addListener(id => { cache.delete(id); schedule(); });
 api.runtime.onStartup.addListener(schedule);
-api.runtime.onInstalled.addListener(() => { api.alarms.create('sync', { periodInMinutes: 0.5 }); schedule(); });
+api.runtime.onInstalled.addListener(() => { getSettings().then(configureAlarm); schedule(); });
 api.alarms.onAlarm.addListener(schedule);
