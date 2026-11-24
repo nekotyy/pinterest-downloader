@@ -28,6 +28,22 @@ try {
     catch (InvalidOperationException) { }
     Assert(File.ReadAllText(historyFile) == "not valid json", "invalid history is preserved");
 
+    var preferencesFile = Path.Combine(root, "settings", "preferences.json");
+    var preferences = new PreferencesStore(preferencesFile);
+    Assert(preferences.Value == new AppPreferences(), "default preferences preserve the existing behavior");
+    var changed = new AppPreferences("Dark", true, false, 50);
+    preferences.Save(changed);
+    Assert(new PreferencesStore(preferencesFile).Value == changed, "preferences survive a restart");
+    try { preferences.Save(changed with { PageSize = 0 }); throw new Exception("invalid page size was accepted"); }
+    catch (InvalidDataException) { }
+    Assert(new PreferencesStore(preferencesFile).Value == changed, "invalid preferences do not replace saved values");
+    File.WriteAllText(preferencesFile, "invalid json");
+    preferences = new PreferencesStore(preferencesFile);
+    Assert(preferences.LoadError != null, "invalid preferences are reported");
+    try { preferences.Save(changed); throw new Exception("invalid preferences were overwritten"); }
+    catch (InvalidOperationException) { }
+    Assert(File.ReadAllText(preferencesFile) == "invalid json", "invalid preferences remain intact");
+
     var registry = new BrowserRegistry();
     var now = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
     var missingImage = new Pin("123", "https://pinterest.com/pin/123/", "First", "");
