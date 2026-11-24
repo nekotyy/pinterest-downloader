@@ -1,4 +1,4 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>
-  <ItemGroup><Compile Include="../../DownloadHistory.cs" Link="DownloadHistory.cs" /><Compile Include="../../BrowserRegistry.cs" Link="BrowserRegistry.cs" /><Compile Include="../../ImageDownloader.cs" Link="ImageDownloader.cs" /><Compile Include="../../CloseCommands.cs" Link="CloseCommands.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="../../DownloadHistory.cs" Link="DownloadHistory.cs" /><Compile Include="../../BrowserRegistry.cs" Link="BrowserRegistry.cs" /><Compile Include="../../ImageDownloader.cs" Link="ImageDownloader.cs" /><Compile Include="../../CloseCommands.cs" Link="CloseCommands.cs" /><Compile Include="../../PinFilter.cs" Link="PinFilter.cs" /></ItemGroup>
 </Project>

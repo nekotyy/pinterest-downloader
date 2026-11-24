@@ -67,6 +67,10 @@ try {
     targets = CloseCommands.Targets(closeRegistry, source1, now, id => id == "123");
     Assert(targets.Count == 1 && targets.ContainsKey(source1), "the browser filter limits tab closing");
     Assert(CloseCommands.Targets(closeRegistry, null, now.AddMinutes(3), _ => true).Count == 0, "offline browsers do not receive close requests");
+    var searchable = new[] { withImage with { Title = "Mountain" }, other with { Title = "Coast" } };
+    Assert(PinFilter.Apply(searchable, "mount", false, _ => false).Single().Id == "123", "search is case-insensitive");
+    Assert(PinFilter.Apply(searchable, "456", false, _ => false).Single().Id == "456", "search matches pin IDs");
+    Assert(PinFilter.Apply(searchable, "", true, id => id == "123").Single().Id == "456", "downloaded pins can be hidden");
 
     var downloadFolder = Path.Combine(root, "downloads");
     var downloadHistory = new DownloadHistory(Path.Combine(root, "downloads-history.json"));

@@ -40,6 +40,8 @@ sealed class MainWindow : Window
     readonly Button cancelDownload = new() { Content = "Отменить", IsVisible = false };
     readonly ComboBox browserFilter = new() { MinWidth = 220 };
     readonly CheckBox repeat = new() { Content = "Скачивать повторно", VerticalAlignment = VerticalAlignment.Center };
+    readonly CheckBox hideSaved = new() { Content = "Скрыть скачанные", VerticalAlignment = VerticalAlignment.Center };
+    readonly TextBox search = new() { Watermark = "Поиск по названию или ID" };
     readonly Button more = new() { Content = "Следующие 100" };
     readonly Button previous = new() { Content = "Предыдущие 100" };
     readonly SemaphoreSlim previewLimit = new(6);
@@ -53,6 +55,7 @@ sealed class MainWindow : Window
     string browserSignature = "";
     int visibleCount = 100;
     bool rebuildingBrowsers;
+    Pin[] filteredPins = Array.Empty<Pin>();
     CancellationTokenSource? downloadCancellation;
 
     public MainWindow()
@@ -66,11 +69,15 @@ sealed class MainWindow : Window
         try { Icon = new WindowIcon(AssetLoader.Open(new Uri("avares://PinterestDownload/docs/icon.png"))); } catch { }
         var choose = new Button { Content = "Изменить папку" };
         AutomationProperties.SetName(browserFilter, "Выбор браузера");
+        AutomationProperties.SetName(search, "Поиск по названию или ID пина");
+        AutomationProperties.SetName(downloadProgress, "Прогресс загрузки");
         choose.Click += async (_, _) => await ChooseFolder();
         download.Click += async (_, _) => await DownloadSelected();
         closeTabs.Click += (_, _) => CloseSavedTabs();
         cancelDownload.Click += (_, _) => { cancelDownload.IsEnabled = false; downloadCancellation?.Cancel(); };
-        select.Click += (_, _) => { if (selected.Count == pins.Count) selected.Clear(); else foreach (var id in pins.Keys) selected.Add(id); RenderPins(); };
+        select.Click += (_, _) => { bool clear = filteredPins.Length > 0 && filteredPins.All(pin => selected.Contains(pin.Id)); foreach (var pin in filteredPins) if (clear) selected.Remove(pin.Id); else selected.Add(pin.Id); RenderPins(); };
+        search.TextChanged += (_, _) => { visibleCount = 100; RenderPins(); };
+        hideSaved.IsCheckedChanged += (_, _) => { visibleCount = 100; RenderPins(); };
         more.Click += (_, _) => { visibleCount += 100; RenderPins(); };
         previous.Click += (_, _) => { visibleCount = Math.Max(100, visibleCount - 100); RenderPins(); };
         browserFilter.SelectionChanged += (_, _) => { if (!rebuildingBrowsers) { visibleCount = 100; ApplyBrowserFilter(); } };
@@ -82,15 +89,17 @@ sealed class MainWindow : Window
         var headerText = new StackPanel { Spacing = 4, Children = { new TextBlock { Text = "Pinterest Download", FontSize = 27, FontWeight = FontWeight.Bold }, new TextBlock { Text = "Ваши пины в одном месте", Opacity = .7 } } };
         var header = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 14, Children = { headerText } };
         try { header.Children.Insert(0, new Image { Source = new Bitmap(AssetLoader.Open(new Uri("avares://PinterestDownload/docs/icon.png"))), Width = 48, Height = 48 }); } catch { }
-        var layout = new Grid { RowDefinitions = new RowDefinitions("Auto,Auto,Auto,Auto,Auto,Auto,*,Auto"), Margin = new Thickness(28), RowSpacing = 12 };
+        var layout = new Grid { RowDefinitions = new RowDefinitions("Auto,Auto,Auto,Auto,Auto,Auto,Auto,*,Auto"), Margin = new Thickness(28), RowSpacing = 12 };
         AddRow(layout, header, 0); AddRow(layout, top, 1);
         AddRow(layout, new StackPanel { Orientation = Orientation.Horizontal, Spacing = 15, Children = { browserFilter, browserStatus } }, 2);
         var progressPanel = new DockPanel { LastChildFill = true };
         DockPanel.SetDock(cancelDownload, Dock.Right); progressPanel.Children.Add(cancelDownload);
         progressPanel.Children.Add(new StackPanel { Spacing = 5, Children = { downloadStatus, downloadProgress } });
-        AddRow(layout, notice, 3); AddRow(layout, toolbar, 4); AddRow(layout, progressPanel, 5);
-        AddRow(layout, new ScrollViewer { Content = gallery, VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto }, 6);
-        AddRow(layout, new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12, Children = { previous, more } }, 7);
+        var filters = new DockPanel { LastChildFill = true };
+        DockPanel.SetDock(hideSaved, Dock.Right); filters.Children.Add(hideSaved); filters.Children.Add(search);
+        AddRow(layout, notice, 3); AddRow(layout, filters, 4); AddRow(layout, toolbar, 5); AddRow(layout, progressPanel, 6);
+        AddRow(layout, new ScrollViewer { Content = gallery, VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto }, 7);
+        AddRow(layout, new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12, Children = { previous, more } }, 8);
         Content = layout; UpdateFolder(); RefreshBrowserList(); RenderPins();
         ActualThemeVariantChanged += (_, _) => ApplyTheme(); ApplyTheme();
         Opened += (_, _) => StartListener();
@@ -102,7 +111,7 @@ sealed class MainWindow : Window
     static void AddRow(Grid grid, Control control, int row) { Grid.SetRow(control, row); grid.Children.Add(control); }
     void UpdateFolder() => folderLabel.Text = "Папка: " + folder;
     void ApplyTheme() { Background = new SolidColorBrush(Color.Parse(ActualThemeVariant == ThemeVariant.Dark ? "#17171B" : "#F7F5F3")); notice.Foreground = ActualThemeVariant == ThemeVariant.Dark ? Brushes.Salmon : Brushes.Firebrick; RenderPins(); }
-    void UpdateCount() { countLabel.Text = $"Найдено: {pins.Count}, выбрано: {selected.Count}"; download.IsEnabled = !busy && selected.Count > 0; closeTabs.IsEnabled = !busy && pins.Count > 0; select.Content = pins.Count > 0 && selected.Count == pins.Count ? "Снять выбор" : "Выбрать все"; }
+    void UpdateCount() { countLabel.Text = $"Найдено: {pins.Count}, показано: {filteredPins.Length}, выбрано: {selected.Count}"; download.IsEnabled = !busy && selected.Count > 0; closeTabs.IsEnabled = !busy && pins.Count > 0; select.IsEnabled = filteredPins.Length > 0; select.Content = filteredPins.Length > 0 && filteredPins.All(pin => selected.Contains(pin.Id)) ? "Снять выбор" : "Выбрать все"; }
 
     void CloseSavedTabs()
     {
@@ -215,9 +224,11 @@ sealed class MainWindow : Window
     void RenderPins()
     {
         gallery.Children.Clear(); statusLabels.Clear();
-        if (pins.Count == 0) gallery.Children.Add(new TextBlock { Text = "Откройте пины в браузере и откройте расширение и нажмите «Обновить вкладки».\nСписок также обновляется автоматически.", Margin = new Thickness(4, 36), Foreground = Brushes.Gray });
-        if (visibleCount > Math.Max(100, pins.Count)) visibleCount = Math.Max(100, ((pins.Count + 99) / 100) * 100);
-        foreach (var pin in pins.Values.Skip(visibleCount - 100).Take(100)) {
+        filteredPins = PinFilter.Apply(pins.Values, search.Text ?? "", hideSaved.IsChecked == true, id => DownloadedPath(id) != null);
+        if (pins.Count == 0) gallery.Children.Add(new TextBlock { Text = "Откройте пины в браузере, затем откройте расширение и нажмите «Обновить вкладки».", Margin = new Thickness(4, 36), Opacity = .75 });
+        else if (filteredPins.Length == 0) gallery.Children.Add(new TextBlock { Text = "По заданным условиям пины не найдены.", Margin = new Thickness(4, 36), Opacity = .75 });
+        if (visibleCount > Math.Max(100, filteredPins.Length)) visibleCount = Math.Max(100, ((filteredPins.Length + 99) / 100) * 100);
+        foreach (var pin in filteredPins.Skip(visibleCount - 100).Take(100)) {
             var image = new Image { Width = 200, Height = 180, Stretch = Stretch.Uniform };
             var check = new CheckBox { Content = pin.Title, IsChecked = selected.Contains(pin.Id), MaxWidth = 195 };
             check.IsCheckedChanged += (_, _) => { if (check.IsChecked == true) selected.Add(pin.Id); else selected.Remove(pin.Id); UpdateCount(); };
@@ -229,7 +240,7 @@ sealed class MainWindow : Window
             gallery.Children.Add(new Border { Background = new SolidColorBrush(Color.Parse(ActualThemeVariant == ThemeVariant.Dark ? "#29292F" : "#FFFFFF")), CornerRadius = new CornerRadius(12), Padding = new Thickness(12), Margin = new Thickness(0, 0, 16, 16), Child = stack });
             if (IsImage(pin.Image)) _ = LoadPreview(image, pin.Image);
         }
-        previous.IsVisible = visibleCount > 100; more.IsVisible = pins.Count > visibleCount; UpdateCount();
+        previous.IsVisible = visibleCount > 100; more.IsVisible = filteredPins.Length > visibleCount; UpdateCount();
     }
 
     async Task LoadPreview(Image image, string url)
@@ -269,11 +280,13 @@ sealed class MainWindow : Window
             foreach (var pin in items) {
                 if (cancellation.IsCancellationRequested) break;
                 downloadStatus.Text = $"Обработано {completed} из {items.Length}";
-                await Download(pin, completed, targetFolder, allowRepeat, cancellation.Token); completed++;
+                await Download(pin, completed, targetFolder, allowRepeat, cancellation.Token);
+                if (cancellation.IsCancellationRequested) break;
+                completed++;
                 downloadProgress.IsIndeterminate = false; downloadProgress.Value = completed;
             }
             downloadStatus.Text = cancellation.IsCancellationRequested ? $"Отменено. Обработано {completed} из {items.Length}" : $"Завершено: {completed} из {items.Length}";
-        } finally { downloadCancellation = null; cancelDownload.IsVisible = false; downloadProgress.IsIndeterminate = false; busy = false; UpdateCount(); }
+        } finally { downloadCancellation = null; cancelDownload.IsVisible = false; downloadProgress.IsIndeterminate = false; busy = false; if (hideSaved.IsChecked == true) RenderPins(); else UpdateCount(); }
     }
     async Task Download(Pin pin, int completed, string targetFolder, bool allowRepeat, CancellationToken cancellationToken)
     {
