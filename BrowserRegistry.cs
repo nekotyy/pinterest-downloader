@@ -1,7 +1,7 @@
 namespace PinterestDownload;
 
 record Pin(string Id, string Url, string Title, string Image);
-record SyncPayload(string Source, string Browser, long Generation, int Done, int Total, List<Pin> Pins);
+record SyncPayload(string Source, string Browser, long Generation, int Done, int Total, List<Pin> Pins, CloseAcknowledgement? Ack = null);
 
 sealed class BrowserSession
 {

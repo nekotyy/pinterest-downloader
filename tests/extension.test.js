@@ -69,5 +69,48 @@ async function check(browserMode) {
   const failedLoad = await new Promise(resolve => messageListener({ type: 'load-discarded' }, {}, resolve));
   assert.equal(failedLoad.failed, 1, 'reload failures are reported');
 }
-(async () => { await check('chrome'); await check('browser'); console.log('Chrome and Firefox sync, 1000 tabs and unloaded tabs: OK'); })()
+
+async function checkClose(browserMode) {
+  const storage = { sourceId: '12345678-1234-1234-1234-123456789abc' }, removed = [], sent = [];
+  const events = { addListener() {} };
+  const tabs = [
+    { id: 1, url: 'https://www.pinterest.com/pin/123/', title: 'One' },
+    { id: 2, url: 'https://www.pinterest.com/pin/456/', title: 'Other pin' },
+    { id: 3, url: 'https://ru.pinterest.com/pin/123/', title: 'Duplicate' },
+    { id: 4, url: 'https://example.com/pin/123/', title: 'Other site' }
+  ];
+  const api = {
+    tabs: { query: async () => tabs, remove: async id => { removed.push(id); if (id === 3) throw Error('not allowed'); }, onUpdated: events, onRemoved: events },
+    scripting: { executeScript: async () => [{ result: 'https://i.pinimg.com/image.jpg' }] },
+    action: { setBadgeText: async () => {} }, runtime: { onStartup: events, onInstalled: events, onMessage: events },
+    alarms: { onAlarm: events, create() {} }, storage: { local: { get: async () => ({ ...storage }), set: async data => Object.assign(storage, data) } }
+  };
+  const command = { id: 'a'.repeat(32), pins: ['123'], expiresAt: Date.now() + 60000 };
+  let responseCommand = command;
+  const context = { [browserMode]: api, navigator: { userAgent: 'Chrome/120' }, crypto,
+    setTimeout: (fn, ms) => { const timer = setTimeout(fn, ms); timer.unref(); return timer; }, clearTimeout,
+    fetch: async (url, options) => { sent.push(JSON.parse(options.body)); return { ok: true, status: 200, json: async () => responseCommand }; } };
+  vm.createContext(context); vm.runInContext(source, context);
+  await vm.runInContext('sync()', context);
+  await vm.runInContext('sync()', context);
+  assert.deepEqual(removed, [1, 3], 'only matching Pinterest tabs are attempted and repeated commands do not close tabs again');
+  assert.equal(storage.handledClose.closed, 1);
+  assert.equal(storage.handledClose.failed, 1);
+  assert.ok(sent.some(item => item.ack?.id === command.id && item.ack.closed === 1 && item.ack.failed === 1));
+  responseCommand = { id: 'b'.repeat(32), pins: ['456'], expiresAt: Date.now() + 60000 };
+  await vm.runInContext('sync()', context);
+  responseCommand = command;
+  await vm.runInContext('sync()', context);
+  assert.deepEqual(removed, [1, 3, 2], 'a delayed response from an older command is not executed again');
+  responseCommand = { id: 'c'.repeat(32), pins: ['456'], expiresAt: Date.now() - 1 };
+  await vm.runInContext('sync()', context);
+  assert.deepEqual(removed, [1, 3, 2], 'expired commands do not close tabs');
+  responseCommand = { id: 'd'.repeat(32), pins: ['456'], expiresAt: Date.now() + 60000 };
+  storage.handledClose = { id: responseCommand.id, finished: false };
+  storage.handledCloseIds = [{ id: responseCommand.id, expiresAt: responseCommand.expiresAt }];
+  await vm.runInContext('sync()', context);
+  assert.deepEqual(removed, [1, 3, 2], 'interrupted commands are not replayed');
+  assert.ok(sent.some(item => item.ack?.id === responseCommand.id && item.ack.failed === -1), 'interrupted command is reported');
+}
+(async () => { await check('chrome'); await check('browser'); await checkClose('chrome'); await checkClose('browser'); console.log('Browser synchronization, unloaded tabs and safe tab closing: OK'); })()
   .catch(error => { console.error(error); process.exitCode = 1; });

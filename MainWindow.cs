@@ -25,6 +25,7 @@ sealed class MainWindow : Window
     readonly DownloadHistory history;
     readonly ImageDownloader downloader;
     readonly BrowserRegistry browsers = new();
+    readonly CloseCommands closeCommands = new();
     readonly Dictionary<string, Pin> pins = new();
     readonly HashSet<string> selected = new();
     readonly Dictionary<string, TextBlock> statusLabels = new();
@@ -45,6 +46,7 @@ sealed class MainWindow : Window
     readonly Dictionary<string, Task<Bitmap?>> previewCache = new();
     readonly Button download = new() { Content = "Скачать выбранные", Background = new SolidColorBrush(Color.Parse("#A52031")), Foreground = Brushes.White };
     readonly Button select = new() { Content = "Выбрать все" };
+    readonly Button closeTabs = new() { Content = "Закрыть скачанные вкладки" };
     string folder = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures);
     bool busy;
     string lastList = "";
@@ -66,6 +68,7 @@ sealed class MainWindow : Window
         AutomationProperties.SetName(browserFilter, "Выбор браузера");
         choose.Click += async (_, _) => await ChooseFolder();
         download.Click += async (_, _) => await DownloadSelected();
+        closeTabs.Click += (_, _) => CloseSavedTabs();
         cancelDownload.Click += (_, _) => { cancelDownload.IsEnabled = false; downloadCancellation?.Cancel(); };
         select.Click += (_, _) => { if (selected.Count == pins.Count) selected.Clear(); else foreach (var id in pins.Keys) selected.Add(id); RenderPins(); };
         more.Click += (_, _) => { visibleCount += 100; RenderPins(); };
@@ -74,7 +77,8 @@ sealed class MainWindow : Window
         var top = new DockPanel { LastChildFill = true };
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, Children = { choose, download } };
         DockPanel.SetDock(buttons, Dock.Right); top.Children.Add(buttons); top.Children.Add(folderLabel);
-        var toolbar = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 18, Children = { countLabel, select, repeat } };
+        var toolbar = new WrapPanel { Orientation = Orientation.Horizontal, Children = { countLabel, select, repeat, closeTabs } };
+        foreach (Control control in toolbar.Children) control.Margin = new Thickness(0, 0, 14, 4);
         var headerText = new StackPanel { Spacing = 4, Children = { new TextBlock { Text = "Pinterest Download", FontSize = 27, FontWeight = FontWeight.Bold }, new TextBlock { Text = "Ваши пины в одном месте", Opacity = .7 } } };
         var header = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 14, Children = { headerText } };
         try { header.Children.Insert(0, new Image { Source = new Bitmap(AssetLoader.Open(new Uri("avares://PinterestDownload/docs/icon.png"))), Width = 48, Height = 48 }); } catch { }
@@ -98,7 +102,16 @@ sealed class MainWindow : Window
     static void AddRow(Grid grid, Control control, int row) { Grid.SetRow(control, row); grid.Children.Add(control); }
     void UpdateFolder() => folderLabel.Text = "Папка: " + folder;
     void ApplyTheme() { Background = new SolidColorBrush(Color.Parse(ActualThemeVariant == ThemeVariant.Dark ? "#17171B" : "#F7F5F3")); notice.Foreground = ActualThemeVariant == ThemeVariant.Dark ? Brushes.Salmon : Brushes.Firebrick; RenderPins(); }
-    void UpdateCount() { countLabel.Text = $"Найдено: {pins.Count}, выбрано: {selected.Count}"; download.IsEnabled = !busy && selected.Count > 0; select.Content = pins.Count > 0 && selected.Count == pins.Count ? "Снять выбор" : "Выбрать все"; }
+    void UpdateCount() { countLabel.Text = $"Найдено: {pins.Count}, выбрано: {selected.Count}"; download.IsEnabled = !busy && selected.Count > 0; closeTabs.IsEnabled = !busy && pins.Count > 0; select.Content = pins.Count > 0 && selected.Count == pins.Count ? "Снять выбор" : "Выбрать все"; }
+
+    void CloseSavedTabs()
+    {
+        var source = (browserFilter.SelectedItem as ComboBoxItem)?.Tag as string;
+        int queued = 0; var now = DateTimeOffset.UtcNow;
+        var targets = CloseCommands.Targets(browsers, source, now.UtcDateTime, id => history.Find(id, folder) != null);
+        foreach (var target in targets) if (closeCommands.Queue(target.Key, target.Value, now)) queued++;
+        notice.Text = queued > 0 ? $"Ожидается ответ расширений: {queued}. Обновите вкладки в расширении, чтобы выполнить команду сразу." : "Нет скачанных вкладок в подключённых браузерах или предыдущая команда ещё выполняется.";
+    }
 
     async Task ChooseFolder()
     {
@@ -150,11 +163,22 @@ sealed class MainWindow : Window
             }
             var valid = payload.Pins.Where(p => p != null && p.Id is not null && Regex.IsMatch(p.Id, @"^\d{1,30}$") && IsPin(p.Url, p.Id)).Take(10000)
                 .Select(p => p with { Title = (p.Title ?? "Пин")[..Math.Min((p.Title ?? "Пин").Length, 300)], Image = IsImage(p.Image) ? p.Image : "" }).ToList();
+            var now = DateTimeOffset.UtcNow;
+            if (payload.Ack != null && closeCommands.Acknowledge(payload.Source, payload.Ack, now)) {
+                var ack = payload.Ack;
+                Dispatcher.UIThread.Post(() => notice.Text = ack.Failed < 0 ? "Расширение прервало операцию закрытия. Проверьте вкладки." : $"Закрыто вкладок: {ack.Closed}. Ошибок: {ack.Failed}.");
+            }
+            var command = closeCommands.Pending(payload.Source, now);
             Dispatcher.UIThread.Post(() => {
                 if (!browsers.Update(payload, valid, DateTime.UtcNow)) return;
                 RefreshBrowserList(); ApplyBrowserFilter();
             });
-            res.StatusCode = 204;
+            if (command == null) res.StatusCode = 204;
+            else {
+                var bytes = JsonSerializer.SerializeToUtf8Bytes(command, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+                res.StatusCode = 200; res.ContentType = "application/json"; res.ContentLength64 = bytes.Length;
+                await res.OutputStream.WriteAsync(bytes).ConfigureAwait(false);
+            }
         } catch { res.StatusCode = 400; } finally { res.Close(); }
     }
 

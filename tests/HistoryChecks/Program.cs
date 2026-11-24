@@ -45,6 +45,29 @@ try {
     Assert(BrowserRegistry.Online(registry.Sessions["chrome"], now.AddSeconds(119)), "recent browser is online");
     Assert(!BrowserRegistry.Online(registry.Sessions["chrome"], now.AddSeconds(121)), "inactive browser becomes offline");
 
+    var queue = new CloseCommands();
+    var start = new DateTimeOffset(now);
+    Assert(queue.Queue("chrome", new[] { "123", "123", "456" }, start), "a close request is queued");
+    var command = queue.Pending("chrome", start)!;
+    Assert(command.Pins.SequenceEqual(new[] { "123", "456" }), "close requests are deduplicated");
+    Assert(queue.Pending("firefox", start) == null, "requests do not leak between browsers");
+    Assert(!queue.Queue("chrome", new[] { "789" }, start), "an unfinished request cannot be overwritten");
+    Assert(!queue.Acknowledge("chrome", new CloseAcknowledgement("wrong", 0, 0), start), "unknown acknowledgements do not remove requests");
+    Assert(queue.Acknowledge("chrome", new CloseAcknowledgement(command.Id, 2, 0), start), "matching acknowledgement completes a request");
+    Assert(!queue.Acknowledge("chrome", new CloseAcknowledgement(command.Id, 2, 0), start), "an acknowledgement is processed only once");
+    Assert(queue.Queue("chrome", new[] { "789" }, start), "another request can be queued after completion");
+    Assert(queue.Pending("chrome", start.AddMinutes(3)) == null, "old requests expire instead of closing tabs later");
+    var source1 = "11111111-1111-1111-1111-111111111111";
+    var source2 = "22222222-2222-2222-2222-222222222222";
+    var closeRegistry = new BrowserRegistry();
+    closeRegistry.Update(chrome with { Source = source1 }, chrome.Pins, now);
+    closeRegistry.Update(firefox with { Source = source2 }, firefox.Pins, now);
+    var targets = CloseCommands.Targets(closeRegistry, null, now, id => id == "123");
+    Assert(targets.Count == 2 && targets[source1].SequenceEqual(new[] { "123" }) && targets[source2].SequenceEqual(new[] { "123" }), "only downloaded pins are targeted in each connected browser");
+    targets = CloseCommands.Targets(closeRegistry, source1, now, id => id == "123");
+    Assert(targets.Count == 1 && targets.ContainsKey(source1), "the browser filter limits tab closing");
+    Assert(CloseCommands.Targets(closeRegistry, null, now.AddMinutes(3), _ => true).Count == 0, "offline browsers do not receive close requests");
+
     var downloadFolder = Path.Combine(root, "downloads");
     var downloadHistory = new DownloadHistory(Path.Combine(root, "downloads-history.json"));
     var handler = new FakeImageHandler();
