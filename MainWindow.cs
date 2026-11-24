@@ -35,6 +35,8 @@ sealed class MainWindow : Window
     readonly TextBlock notice = new() { TextWrapping = TextWrapping.Wrap, Foreground = Brushes.Firebrick };
     readonly TextBlock browserStatus = new() { TextWrapping = TextWrapping.Wrap };
     readonly TextBlock downloadStatus = new() { TextWrapping = TextWrapping.Wrap };
+    readonly ProgressBar downloadProgress = new() { Minimum = 0, Height = 8, IsVisible = false };
+    readonly Button cancelDownload = new() { Content = "Отменить", IsVisible = false };
     readonly ComboBox browserFilter = new() { MinWidth = 220 };
     readonly CheckBox repeat = new() { Content = "Скачивать повторно", VerticalAlignment = VerticalAlignment.Center };
     readonly Button more = new() { Content = "Следующие 100" };
@@ -49,6 +51,7 @@ sealed class MainWindow : Window
     string browserSignature = "";
     int visibleCount = 100;
     bool rebuildingBrowsers;
+    CancellationTokenSource? downloadCancellation;
 
     public MainWindow()
     {
@@ -63,6 +66,7 @@ sealed class MainWindow : Window
         AutomationProperties.SetName(browserFilter, "Выбор браузера");
         choose.Click += async (_, _) => await ChooseFolder();
         download.Click += async (_, _) => await DownloadSelected();
+        cancelDownload.Click += (_, _) => { cancelDownload.IsEnabled = false; downloadCancellation?.Cancel(); };
         select.Click += (_, _) => { if (selected.Count == pins.Count) selected.Clear(); else foreach (var id in pins.Keys) selected.Add(id); RenderPins(); };
         more.Click += (_, _) => { visibleCount += 100; RenderPins(); };
         previous.Click += (_, _) => { visibleCount = Math.Max(100, visibleCount - 100); RenderPins(); };
@@ -77,7 +81,10 @@ sealed class MainWindow : Window
         var layout = new Grid { RowDefinitions = new RowDefinitions("Auto,Auto,Auto,Auto,Auto,Auto,*,Auto"), Margin = new Thickness(28), RowSpacing = 12 };
         AddRow(layout, header, 0); AddRow(layout, top, 1);
         AddRow(layout, new StackPanel { Orientation = Orientation.Horizontal, Spacing = 15, Children = { browserFilter, browserStatus } }, 2);
-        AddRow(layout, notice, 3); AddRow(layout, toolbar, 4); AddRow(layout, downloadStatus, 5);
+        var progressPanel = new DockPanel { LastChildFill = true };
+        DockPanel.SetDock(cancelDownload, Dock.Right); progressPanel.Children.Add(cancelDownload);
+        progressPanel.Children.Add(new StackPanel { Spacing = 5, Children = { downloadStatus, downloadProgress } });
+        AddRow(layout, notice, 3); AddRow(layout, toolbar, 4); AddRow(layout, progressPanel, 5);
         AddRow(layout, new ScrollViewer { Content = gallery, VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto }, 6);
         AddRow(layout, new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12, Children = { previous, more } }, 7);
         Content = layout; UpdateFolder(); RefreshBrowserList(); RenderPins();
@@ -85,7 +92,7 @@ sealed class MainWindow : Window
         Opened += (_, _) => StartListener();
         var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(10) };
         timer.Tick += (_, _) => RefreshBrowserList(); timer.Start();
-        Closed += (_, _) => { timer.Stop(); listener.Close(); client.Dispose(); };
+        Closed += (_, _) => { downloadCancellation?.Cancel(); timer.Stop(); listener.Close(); client.Dispose(); };
     }
 
     static void AddRow(Grid grid, Control control, int row) { Grid.SetRow(control, row); grid.Children.Add(control); }
@@ -229,13 +236,28 @@ sealed class MainWindow : Window
     async Task DownloadSelected()
     {
         if (busy) return; busy = true; UpdateCount();
-        var items = selected.ToArray(); int completed = 0;
-        try { foreach (var id in items) { downloadStatus.Text = $"Обработано {completed} из {items.Length}"; if (pins.TryGetValue(id, out var pin)) await Download(pin); completed++; } downloadStatus.Text = $"Завершено: {completed} из {items.Length}"; }
-        finally { busy = false; UpdateCount(); }
+        var items = selected.Where(pins.ContainsKey).Select(id => pins[id]).ToArray(); int completed = 0;
+        var targetFolder = folder; bool allowRepeat = repeat.IsChecked == true;
+        using var cancellation = new CancellationTokenSource(); downloadCancellation = cancellation;
+        downloadProgress.Maximum = Math.Max(items.Length, 1); downloadProgress.Value = 0; downloadProgress.IsVisible = true;
+        cancelDownload.IsVisible = true; cancelDownload.IsEnabled = true;
+        try {
+            foreach (var pin in items) {
+                if (cancellation.IsCancellationRequested) break;
+                downloadStatus.Text = $"Обработано {completed} из {items.Length}";
+                await Download(pin, completed, targetFolder, allowRepeat, cancellation.Token); completed++;
+                downloadProgress.IsIndeterminate = false; downloadProgress.Value = completed;
+            }
+            downloadStatus.Text = cancellation.IsCancellationRequested ? $"Отменено. Обработано {completed} из {items.Length}" : $"Завершено: {completed} из {items.Length}";
+        } finally { downloadCancellation = null; cancelDownload.IsVisible = false; downloadProgress.IsIndeterminate = false; busy = false; UpdateCount(); }
     }
-    async Task Download(Pin pin)
+    async Task Download(Pin pin, int completed, string targetFolder, bool allowRepeat, CancellationToken cancellationToken)
     {
-        var result = await downloader.Download(pin, folder, repeat.IsChecked == true, status => SetStatus(pin.Id, status));
+        var result = await downloader.Download(pin, targetFolder, allowRepeat, progress => {
+            downloadProgress.IsIndeterminate = progress.Total is not > 0;
+            if (progress.Total is > 0) downloadProgress.Value = completed + Math.Min(1, (double)progress.Bytes / progress.Total.Value);
+            SetStatus(pin.Id, $"Скачивание: {progress.Bytes / 1024} КБ" + (progress.Total is long total ? $" из {total / 1024} КБ" : ""));
+        }, cancellationToken);
         if (result.Warning != null) notice.Text = result.Warning;
         SetStatus(pin.Id, result.Status);
     }

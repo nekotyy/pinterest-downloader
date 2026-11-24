@@ -52,9 +52,9 @@ try {
     var downloader = new ImageDownloader(client, downloadHistory);
     var downloadable = new Pin("789", "https://pinterest.com/pin/789/", "Image", "https://i.pinimg.com/image.jpg");
     var result = await downloader.Download(downloadable, downloadFolder, false, _ => { });
-    Assert(result.Status == "Сохранено" && File.Exists(Path.Combine(downloadFolder, "pinterest_789.jpg")), "image is saved to the selected folder");
+    Assert(result.Status == "Сохранено" && result.Saved && File.Exists(Path.Combine(downloadFolder, "pinterest_789.jpg")), "image is saved to the selected folder");
     result = await downloader.Download(downloadable, secondFolder, false, _ => { });
-    Assert(result.Status.StartsWith("Уже скачано") && handler.Requests == 1, "an existing download is reported without another network request");
+    Assert(result.Status.StartsWith("Уже скачано") && !result.Saved && handler.Requests == 1, "an existing download is reported without another network request");
     result = await downloader.Download(downloadable, downloadFolder, true, _ => { });
     Assert(result.Status == "Сохранено" && File.Exists(Path.Combine(downloadFolder, "pinterest_789_2.jpg")), "repeat download saves a separate copy");
     Assert(File.ReadAllBytes(Path.Combine(downloadFolder, "pinterest_789.jpg")).SequenceEqual(new byte[] { 1, 2, 3 }), "repeat download leaves the original intact");
@@ -72,9 +72,13 @@ try {
     Assert(result.Status.StartsWith("Ошибка:") && !File.Exists(Path.Combine(downloadFolder, "pinterest_996.jpg")), "oversized images are rejected");
     handler.Oversize = false;
     var concurrentPath = Path.Combine(downloadFolder, "pinterest_995.jpg");
-    result = await downloader.Download(downloadable with { Id = "995" }, downloadFolder, false, status => { if (status.StartsWith("Скачивание:") && !File.Exists(concurrentPath)) File.WriteAllText(concurrentPath, "other file"); });
+    result = await downloader.Download(downloadable with { Id = "995" }, downloadFolder, false, progress => { if (progress.Bytes > 0 && !File.Exists(concurrentPath)) File.WriteAllText(concurrentPath, "other file"); });
     Assert(result.Status.StartsWith("Ошибка:") && File.ReadAllText(concurrentPath) == "other file", "a file created during download is not overwritten");
     Assert(!Directory.EnumerateFiles(downloadFolder, ".pinterest_*.tmp").Any(), "a conflicting download cleans its temporary file");
+    using var cancellation = new CancellationTokenSource();
+    result = await downloader.Download(downloadable with { Id = "994" }, downloadFolder, false, progress => { if (progress.Bytes > 0) cancellation.Cancel(); }, cancellation.Token);
+    Assert(result.Status == "Отменено" && !File.Exists(Path.Combine(downloadFolder, "pinterest_994.jpg")), "cancelled downloads do not create a completed file");
+    Assert(!Directory.EnumerateFiles(downloadFolder, ".pinterest_*.tmp").Any(), "cancelled downloads remove temporary files");
     Console.WriteLine("Download history, browser status and image downloads: OK");
 } finally { Directory.Delete(root, true); }
 
