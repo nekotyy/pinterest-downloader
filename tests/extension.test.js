@@ -170,5 +170,20 @@ async function checkConcurrentHeartbeat() {
   assert.equal(storage.handledClose.closed, 1);
   assert.equal(storage.handledClose.failed, 0);
 }
-(async () => { await check('chrome'); await check('browser'); await checkClose('chrome'); await checkClose('browser'); await checkConcurrentHeartbeat(); console.log('Browser synchronization, unloaded tabs and safe tab closing: OK'); })()
+async function checkFirstRunIdentity() {
+  const storage = {}, sent = [], events = { addListener() {} };
+  const api = {
+    tabs: { query: async () => [], onUpdated: events, onRemoved: events },
+    action: { setBadgeText: async () => {} }, runtime: { onStartup: events, onInstalled: events, onMessage: events },
+    alarms: { onAlarm: events, create() {} },
+    storage: { local: { get: async () => { const snapshot = { ...storage }; await Promise.resolve(); return snapshot; }, set: async data => Object.assign(storage, data) } }
+  };
+  const context = { chrome: api, navigator: { userAgent: 'Chrome/120' }, crypto,
+    setTimeout: (fn, ms) => { const timer = setTimeout(fn, ms); timer.unref(); return timer; }, clearTimeout,
+    fetch: async (url, options) => { sent.push(JSON.parse(options.body)); return { ok: true, status: 204 }; } };
+  vm.createContext(context); vm.runInContext(source, context);
+  await Promise.all([vm.runInContext('sync()', context), vm.runInContext('checkCommands()', context)]);
+  assert.equal(new Set(sent.map(item => item.source)).size, 1, 'first synchronization and heartbeat use the same profile ID');
+}
+(async () => { await check('chrome'); await check('browser'); await checkClose('chrome'); await checkClose('browser'); await checkConcurrentHeartbeat(); await checkFirstRunIdentity(); console.log('Browser synchronization, unloaded tabs and safe tab closing: OK'); })()
   .catch(error => { console.error(error); process.exitCode = 1; });

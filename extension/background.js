@@ -4,6 +4,7 @@ const commandEndpoint = 'http://127.0.0.1:17849/commands';
 const cache = new Map();
 let running = false, preparing = false, rerun = false, timer;
 let closingActive = false, checkingCommands = false;
+let identityWork = null;
 let closeWork = Promise.resolve();
 let state = { connected: false, phase: 'Ожидание', done: 0, total: 0, browser: '' };
 
@@ -31,10 +32,14 @@ function detectBrowser() {
   return 'Chrome / Chromium';
 }
 async function identity() {
-  let info = await api.storage.local.get(['sourceId', 'browserName', 'handledClose']);
-  if (!info.sourceId) { info.sourceId = crypto.randomUUID(); await api.storage.local.set({ sourceId: info.sourceId }); }
-  if (info.handledClose && !info.handledClose.finished && !closingActive) await api.storage.local.set({ handledClose: { id: info.handledClose.id, closed: 0, failed: -1, finished: true } });
-  return { source: info.sourceId, browser: (info.browserName || detectBrowser()).slice(0, 50) };
+  if (identityWork) return identityWork;
+  identityWork = (async () => {
+    const info = await api.storage.local.get(['sourceId', 'browserName', 'handledClose']);
+    if (!info.sourceId) { info.sourceId = crypto.randomUUID(); await api.storage.local.set({ sourceId: info.sourceId }); }
+    if (info.handledClose && !info.handledClose.finished && !closingActive) await api.storage.local.set({ handledClose: { id: info.handledClose.id, closed: 0, failed: -1, finished: true } });
+    return { source: info.sourceId, browser: (info.browserName || detectBrowser()).slice(0, 50) };
+  })();
+  try { return await identityWork; } finally { identityWork = null; }
 }
 async function closeSaved(command) {
   if (!command || !/^[a-f0-9]{32}$/.test(command.id || '') || !Array.isArray(command.pins) || command.pins.length > 10000 || !Number.isFinite(command.expiresAt) || command.expiresAt <= Date.now()) return false;
