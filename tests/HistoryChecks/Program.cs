@@ -67,6 +67,14 @@ try {
     var requestCount = handler.Requests;
     result = await downloader.Download(downloadable with { Id = "997", Image = "https://example.com/image.jpg" }, downloadFolder, false, _ => { });
     Assert(result.Status.StartsWith("Ошибка:") && handler.Requests == requestCount, "non-Pinterest image hosts are rejected");
+    handler.BreakStream = false; handler.Oversize = true;
+    result = await downloader.Download(downloadable with { Id = "996" }, downloadFolder, false, _ => { });
+    Assert(result.Status.StartsWith("Ошибка:") && !File.Exists(Path.Combine(downloadFolder, "pinterest_996.jpg")), "oversized images are rejected");
+    handler.Oversize = false;
+    var concurrentPath = Path.Combine(downloadFolder, "pinterest_995.jpg");
+    result = await downloader.Download(downloadable with { Id = "995" }, downloadFolder, false, status => { if (status.StartsWith("Скачивание:") && !File.Exists(concurrentPath)) File.WriteAllText(concurrentPath, "other file"); });
+    Assert(result.Status.StartsWith("Ошибка:") && File.ReadAllText(concurrentPath) == "other file", "a file created during download is not overwritten");
+    Assert(!Directory.EnumerateFiles(downloadFolder, ".pinterest_*.tmp").Any(), "a conflicting download cleans its temporary file");
     Console.WriteLine("Download history, browser status and image downloads: OK");
 } finally { Directory.Delete(root, true); }
 
@@ -77,11 +85,13 @@ sealed class FakeImageHandler : HttpMessageHandler
     public int Requests;
     public bool Fail;
     public bool BreakStream;
+    public bool Oversize;
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         Requests++;
         HttpContent content = BreakStream ? new StreamContent(new FailingStream()) : new ByteArrayContent(new byte[] { 1, 2, 3 });
         content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("image/jpeg");
+        if (Oversize) content.Headers.ContentLength = 50_000_001;
         return Task.FromResult(new HttpResponseMessage(Fail ? System.Net.HttpStatusCode.BadGateway : System.Net.HttpStatusCode.OK) { Content = content });
     }
 }

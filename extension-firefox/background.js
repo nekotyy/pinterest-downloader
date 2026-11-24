@@ -1,7 +1,7 @@
 const api = globalThis.browser || chrome;
 const endpoint = 'http://127.0.0.1:17849/pins';
 const cache = new Map();
-let running = false, rerun = false, timer;
+let running = false, preparing = false, rerun = false, timer;
 let state = { connected: false, phase: 'Ожидание', done: 0, total: 0, browser: '' };
 
 function detectBrowser() {
@@ -19,7 +19,7 @@ async function identity() {
   return { source: info.sourceId, browser: (info.browserName || detectBrowser()).slice(0, 50) };
 }
 async function sync() {
-  if (running) { rerun = true; return; }
+  if (running || preparing) { rerun = true; return; }
   running = true;
   try {
     const who = await identity();
@@ -71,10 +71,30 @@ async function sync() {
   } catch (_) { state.connected = false; state.phase = 'Ошибка'; await api.action.setBadgeText({ text: '!' }); }
   finally { running = false; if (rerun) { rerun = false; schedule(); } }
 }
-function schedule() { clearTimeout(timer); timer = setTimeout(sync, 400); }
+function schedule() { if (preparing) { rerun = true; return; } clearTimeout(timer); timer = setTimeout(sync, 400); }
+async function loadDiscarded() {
+  if (running || preparing) return { busy: true };
+  preparing = true; clearTimeout(timer);
+  let failed = 0;
+  try {
+    const tabs = await api.tabs.query({ url: 'https://*.pinterest.com/pin/*' });
+    const targets = tabs.filter(tab => (tab.discarded || tab.frozen) && /^https:\/\/(?:[a-z0-9-]+\.)*pinterest\.com\/pin\/\d+\/?(?:[?#].*)?$/i.test(tab.url || ''));
+    state = { ...state, phase: 'Загрузка вкладок', done: 0, total: targets.length };
+    for (let i = 0; i < targets.length; i += 3) {
+      await Promise.all(targets.slice(i, i + 3).map(async tab => {
+        try { cache.delete(tab.id); await api.tabs.reload(tab.id); } catch (_) { failed++; }
+        state.done++;
+      }));
+      if (i + 3 < targets.length) await new Promise(resolve => setTimeout(resolve, 750));
+    }
+    return { total: targets.length, failed };
+  } catch (_) { return { error: true }; }
+  finally { preparing = false; rerun = false; schedule(); }
+}
 api.runtime.onMessage.addListener((message, sender, respond) => {
   if (message?.type === 'status') { respond(state); return; }
   if (message?.type === 'sync') { schedule(); respond({ ok: true }); return; }
+  if (message?.type === 'load-discarded') { loadDiscarded().then(respond); return true; }
   if (message?.type === 'browser') { api.storage.local.set({ browserName: String(message.name || '').slice(0, 50) }).then(() => { schedule(); respond({ ok: true }); }); return true; }
 });
 api.tabs.onUpdated.addListener((id, change) => { if (change.status === 'loading') cache.delete(id); if (change.status === 'complete') schedule(); });

@@ -13,13 +13,13 @@ for (const folder of ['extension', 'extension-firefox']) {
 }
 
 async function check(browserMode) {
-  let messageListener, tabUpdated, sent = [], active = 0, maxActive = 0, calls = 0;
+  let messageListener, tabUpdated, sent = [], active = 0, maxActive = 0, calls = 0, reloads = 0;
   const events = { addListener() {} };
   const tabs = Array.from({ length: 1000 }, (_, i) => ({ id: i + 1, url: `https://ru.pinterest.com/pin/${i + 1}/`, title: `Пин ${i + 1}`, discarded: i === 9 }));
   tabs.push({ id: 1001, url: tabs[0].url, title: 'Дубликат' }, { id: 1002, url: 'https://evil.example/pin/55/' });
   const storage = {};
   const api = {
-    tabs: { query: async () => tabs, onUpdated: { addListener(fn) { tabUpdated = fn; } }, onRemoved: events },
+    tabs: { query: async () => tabs, reload: async id => { reloads++; tabs.find(tab => tab.id === id).discarded = false; }, onUpdated: { addListener(fn) { tabUpdated = fn; } }, onRemoved: events },
     scripting: { executeScript: async ({ target }) => { active++; calls++; maxActive = Math.max(active, maxActive); await Promise.resolve(); active--; if (target.tabId === 4) throw Error('unavailable'); return [{ result: `https://i.pinimg.com/${target.tabId}.jpg` }]; } },
     action: { setBadgeText: async () => {} },
     runtime: { onStartup: events, onInstalled: events, onMessage: { addListener(fn) { messageListener = fn; } } },
@@ -56,6 +56,18 @@ async function check(browserMode) {
   await vm.runInContext('sync()', context);
   messageListener({ type: 'status' }, {}, value => { status = value; });
   assert.equal(status.connected, false, 'status reports a disconnected application');
+  assert.equal(reloads, 0, 'automatic synchronization does not reload tabs');
+  const resultLoad = await new Promise(resolve => {
+    assert.equal(messageListener({ type: 'load-discarded' }, {}, resolve), true);
+  });
+  assert.equal(resultLoad.failed, 0);
+  assert.equal(resultLoad.total, 1);
+  assert.equal(reloads, 1, 'only unloaded Pinterest tabs are reloaded');
+  assert.equal(tabs[9].discarded, false);
+  tabs[9].discarded = true;
+  api.tabs.reload = async () => { throw new Error('not allowed'); };
+  const failedLoad = await new Promise(resolve => messageListener({ type: 'load-discarded' }, {}, resolve));
+  assert.equal(failedLoad.failed, 1, 'reload failures are reported');
 }
 (async () => { await check('chrome'); await check('browser'); console.log('Chrome and Firefox sync, 1000 tabs and unloaded tabs: OK'); })()
   .catch(error => { console.error(error); process.exitCode = 1; });

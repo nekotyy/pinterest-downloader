@@ -12,4 +12,16 @@ async function refresh() {
 }
 browser.addEventListener('change', () => { chosen = true; api.runtime.sendMessage({ type: 'browser', name: browser.value }); });
 document.querySelector('#sync').addEventListener('click', () => { api.runtime.sendMessage({ type: 'sync' }); setTimeout(refresh, 500); });
+document.querySelector('#load').addEventListener('click', async event => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  const result = document.querySelector('#result');
+  result.textContent = 'Запрашиваем загрузку вкладок...';
+  try {
+    const response = await api.runtime.sendMessage({ type: 'load-discarded' });
+    result.textContent = response.busy ? 'Дождитесь завершения обработки.' : response.error ? 'Не удалось запросить загрузку вкладок.' : `Обработано: ${response.total}. Ошибок: ${response.failed}.`;
+  } catch (_) { result.textContent = 'Не удалось запросить загрузку вкладок.'; }
+  button.disabled = false;
+  refresh();
+});
 refresh(); setInterval(refresh, 1000);
